@@ -109,6 +109,7 @@ class TradingState:
         self.access_token = None
         self.kite_client = None
         self.daily_budget = 10000
+        self.budget_used = 0
         self.daily_pnl = 0
         self.trades = []
         self.positions = []
@@ -120,6 +121,7 @@ class TradingState:
             'is_authenticated': self.is_authenticated,
             'is_trading': self.is_trading,
             'daily_budget': self.daily_budget,
+            'budget_used': self.budget_used,
             'daily_pnl': self.daily_pnl,
             'trades_count': len(self.trades),
             'positions_count': len(self.positions),
@@ -319,6 +321,62 @@ USE_LIVE_DATA=true
     
     except Exception as e:
         logger.error(f"Configuration error: {e}")
+        raise HTTPException(500, str(e))
+
+class BudgetRequest(BaseModel):
+    daily_budget: float
+
+@app.post("/api/update_budget")
+async def update_budget(budget_data: BudgetRequest):
+    """Update daily trading budget"""
+    try:
+        # Validate budget amount
+        if budget_data.daily_budget < 5000:
+            raise HTTPException(400, "Minimum daily budget is ₹5,000")
+        
+        if budget_data.daily_budget > 1000000:
+            raise HTTPException(400, "Maximum daily budget is ₹10,00,000")
+        
+        # Stop trading if currently running and budget is reduced below current usage
+        if trading_state.is_trading and budget_data.daily_budget < trading_state.budget_used:
+            # Auto-stop trading if new budget is less than current usage
+            trading_state.is_trading = False
+            if trading_state.trading_thread:
+                trading_state.trading_thread = None
+            
+            logger.warning(f"Trading stopped automatically due to budget reduction. "
+                         f"New budget: ₹{budget_data.daily_budget}, Used: ₹{trading_state.budget_used}")
+        
+        # Update budget in both trading state and config
+        old_budget = trading_state.daily_budget
+        trading_state.daily_budget = budget_data.daily_budget
+        
+        # Update the global config so risk manager uses new budget
+        from config import Config
+        Config.MAX_DAILY_BUDGET = budget_data.daily_budget
+        
+        # Log the change
+        logger.info(f"Daily budget updated from ₹{old_budget} to ₹{budget_data.daily_budget}")
+        
+        # Broadcast update to connected clients
+        await manager.broadcast({
+            "type": "budget_update",
+            "daily_budget": trading_state.daily_budget,
+            "budget_used": trading_state.budget_used,
+            "is_trading": trading_state.is_trading
+        })
+        
+        return JSONResponse({
+            "success": True, 
+            "message": f"Daily budget updated to ₹{budget_data.daily_budget:,.2f}",
+            "daily_budget": trading_state.daily_budget,
+            "budget_used": trading_state.budget_used
+        })
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Budget update error: {e}")
         raise HTTPException(500, str(e))
 
 @app.post("/api/authenticate")
@@ -521,6 +579,17 @@ def run_trading_simulation():
                 
                 trading_state.trades.append(trade)
                 
+                # Update budget used (for BUY orders)
+                if action == 'BUY':
+                    trade_value = quantity * price
+                    trading_state.budget_used += trade_value
+                    
+                    # Check if budget exceeded (safety check)
+                    if trading_state.budget_used > trading_state.daily_budget:
+                        logger.warning(f"Budget exceeded! Used: ₹{trading_state.budget_used:.2f}, Budget: ₹{trading_state.daily_budget:.2f}")
+                        trading_state.is_trading = False
+                        break
+                
                 # Update P&L
                 pnl_change = random.uniform(-50, 100)
                 trading_state.daily_pnl += pnl_change
@@ -637,6 +706,47 @@ def create_web_files():
         <div class="row">
             <!-- Trading Controls -->
             <div class="col-md-4">
+                <!-- Daily Budget Control -->
+                <div class="card mb-3">
+                    <div class="card-header bg-warning text-dark">
+                        <h5><i class="fas fa-rupee-sign"></i> Daily Trading Budget</h5>
+                    </div>
+                    <div class="card-body">
+                        <form id="budget-form">
+                            <div class="mb-3">
+                                <label class="form-label">Set Daily Budget (₹)</label>
+                                <div class="input-group">
+                                    <span class="input-group-text">₹</span>
+                                    <input type="number" class="form-control" id="daily-budget-input" 
+                                           name="daily_budget" value="{{ state.daily_budget or 10000 }}" 
+                                           min="5000" max="1000000" required>
+                                </div>
+                                <div class="form-text">
+                                    Minimum: ₹5,000 | Current Used: <span data-budget-used>₹{{ "%.2f"|format(state.budget_used or 0) }}</span>
+                                </div>
+                            </div>
+                            
+                            <button type="submit" class="btn btn-warning w-100">
+                                <i class="fas fa-save"></i> Update Budget
+                            </button>
+                        </form>
+                        
+                        <!-- Budget Progress -->
+                        <div class="mt-3">
+                            <div class="d-flex justify-content-between">
+                                <small>Budget Used</small>
+                                <small data-budget-percentage>{{ "%.1f"|format(((state.budget_used or 0) / (state.daily_budget or 10000)) * 100) }}%</small>
+                            </div>
+                            <div class="progress">
+                                <div class="progress-bar {% if ((state.budget_used or 0) / (state.daily_budget or 10000)) > 0.8 %}bg-danger{% elif ((state.budget_used or 0) / (state.daily_budget or 10000)) > 0.6 %}bg-warning{% else %}bg-success{% endif %}" 
+                                     style="width: {{ "%.1f"|format(((state.budget_used or 0) / (state.daily_budget or 10000)) * 100) }}%">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Trading Controls -->
                 <div class="card">
                     <div class="card-header">
                         <h5><i class="fas fa-controls"></i> Trading Controls</h5>
@@ -792,12 +902,6 @@ def create_web_files():
                                 <div class="mb-3">
                                     <label class="form-label">API Secret (Consumer Secret)</label>
                                     <input type="password" class="form-control" name="api_secret" required>
-                                </div>
-                                
-                                <div class="mb-3">
-                                    <label class="form-label">Daily Trading Budget (₹)</label>
-                                    <input type="number" class="form-control" name="daily_budget" 
-                                           value="10000" min="5000" required>
                                 </div>
                                 
                                 <button type="submit" class="btn btn-primary">
@@ -1107,6 +1211,65 @@ async function stopTrading() {
     }
 }
 
+async function updateBudget() {
+    const budgetForm = document.getElementById('budget-form');
+    const formData = new FormData(budgetForm);
+    const dailyBudget = parseFloat(formData.get('daily_budget'));
+    
+    try {
+        const response = await fetch('/api/update_budget', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                daily_budget: dailyBudget
+            })
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            updateLiveStatus(result.message, 'success');
+            // Update the progress bar and budget display
+            updateBudgetDisplay(result.daily_budget, result.budget_used);
+        } else {
+            alert('Failed to update budget: ' + result.message);
+        }
+    } catch (error) {
+        alert('Error updating budget: ' + error.message);
+    }
+}
+
+function updateBudgetDisplay(dailyBudget, budgetUsed) {
+    // Update the budget used text
+    const budgetUsedElements = document.querySelectorAll('[data-budget-used]');
+    budgetUsedElements.forEach(el => {
+        el.textContent = `₹${budgetUsed.toFixed(2)}`;
+    });
+    
+    // Update the progress bar
+    const progressPercentage = (budgetUsed / dailyBudget) * 100;
+    const progressBar = document.querySelector('.progress-bar');
+    if (progressBar) {
+        progressBar.style.width = `${progressPercentage.toFixed(1)}%`;
+        
+        // Update progress bar color based on usage
+        progressBar.className = 'progress-bar';
+        if (progressPercentage > 80) {
+            progressBar.classList.add('bg-danger');
+        } else if (progressPercentage > 60) {
+            progressBar.classList.add('bg-warning');
+        } else {
+            progressBar.classList.add('bg-success');
+        }
+    }
+    
+    // Update percentage text
+    const percentageElements = document.querySelectorAll('[data-budget-percentage]');
+    percentageElements.forEach(el => {
+        el.textContent = `${progressPercentage.toFixed(1)}%`;
+    });
+}
+
 async function squareOffAll() {
     if (confirm('Are you sure you want to square off all positions?')) {
         updateLiveStatus('Emergency square off initiated...', 'warning');
@@ -1117,6 +1280,15 @@ async function squareOffAll() {
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
     connectWebSocket();
+    
+    // Budget form submission
+    const budgetForm = document.getElementById('budget-form');
+    if (budgetForm) {
+        budgetForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            updateBudget();
+        });
+    }
     
     // Check for URL parameters
     const urlParams = new URLSearchParams(window.location.search);
