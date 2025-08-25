@@ -115,6 +115,8 @@ class TradingState:
         self.positions = []
         self.active_connections = []
         self.trading_thread = None
+        self.auto_start_enabled = False
+        self.scheduler_thread = None
     
     def to_dict(self):
         return {
@@ -125,15 +127,76 @@ class TradingState:
             'daily_pnl': self.daily_pnl,
             'trades_count': len(self.trades),
             'positions_count': len(self.positions),
-            'market_open': self.is_market_open()
+            'market_open': self.is_market_open(),
+            'auto_start_enabled': self.auto_start_enabled,
+            'market_status': self.get_market_status()
         }
     
     def is_market_open(self):
+        """Check if market is currently open"""
         now = datetime.now()
-        if now.weekday() >= 5:  # Weekend
+        
+        # Check if it's a weekend
+        if now.weekday() >= 5:  # Saturday = 5, Sunday = 6
             return False
-        time_str = now.strftime("%H:%M")
-        return "09:15" <= time_str <= "15:30"
+        
+        # Market hours: 9:15 AM to 3:30 PM (IST)
+        market_open_time = now.replace(hour=9, minute=15, second=0, microsecond=0)
+        market_close_time = now.replace(hour=15, minute=30, second=0, microsecond=0)
+        
+        return market_open_time <= now <= market_close_time
+    
+    def get_market_status(self):
+        """Get detailed market status with timing information"""
+        now = datetime.now()
+        
+        if now.weekday() >= 5:  # Weekend
+            next_monday = now + timedelta(days=(7 - now.weekday()))
+            next_open = next_monday.replace(hour=9, minute=15, second=0, microsecond=0)
+            return {
+                'status': 'Weekend',
+                'message': 'Market closed for weekend',
+                'next_open': next_open.strftime('%Y-%m-%d %H:%M:%S'),
+                'countdown': str(next_open - now).split('.')[0]
+            }
+        
+        market_open_time = now.replace(hour=9, minute=15, second=0, microsecond=0)
+        market_close_time = now.replace(hour=15, minute=30, second=0, microsecond=0)
+        
+        if now < market_open_time:
+            # Before market opens
+            countdown = market_open_time - now
+            return {
+                'status': 'Pre-Market',
+                'message': f'Market opens at 9:15 AM',
+                'next_open': market_open_time.strftime('%Y-%m-%d %H:%M:%S'),
+                'countdown': str(countdown).split('.')[0]
+            }
+        elif now > market_close_time:
+            # After market closes
+            tomorrow = now + timedelta(days=1)
+            if tomorrow.weekday() >= 5:  # If tomorrow is weekend
+                days_to_monday = 7 - tomorrow.weekday()
+                next_open = tomorrow + timedelta(days=days_to_monday)
+            else:
+                next_open = tomorrow
+            next_open = next_open.replace(hour=9, minute=15, second=0, microsecond=0)
+            
+            return {
+                'status': 'Post-Market',
+                'message': 'Market closed for the day',
+                'next_open': next_open.strftime('%Y-%m-%d %H:%M:%S'),
+                'countdown': str(next_open - now).split('.')[0]
+            }
+        else:
+            # Market is open
+            time_to_close = market_close_time - now
+            return {
+                'status': 'Open',
+                'message': f'Market closes at 3:30 PM',
+                'next_close': market_close_time.strftime('%Y-%m-%d %H:%M:%S'),
+                'countdown': str(time_to_close).split('.')[0]
+            }
 
 trading_state = TradingState()
 
@@ -480,13 +543,18 @@ async def auth_callback(request: Request):
 
 @app.post("/api/start_trading")
 async def start_trading():
-    """Start automated trading"""
+    """Start automated trading with market hours validation"""
     try:
         if not trading_state.is_authenticated:
             raise HTTPException(400, "Not authenticated")
         
         if trading_state.is_trading:
             raise HTTPException(400, "Trading already active")
+        
+        # Check if market is open
+        if not trading_state.is_market_open():
+            market_status = trading_state.get_market_status()
+            raise HTTPException(400, f"Cannot start trading: Market is {market_status['status']}. {market_status['message']}")
         
         trading_state.is_trading = True
         
@@ -499,10 +567,10 @@ async def start_trading():
         
         await manager.broadcast({
             "type": "trading_started",
-            "message": "Automated trading started"
+            "message": "Automated trading started during market hours"
         })
         
-        return JSONResponse({"success": True, "message": "Trading started"})
+        return JSONResponse({"success": True, "message": "Trading started during market hours"})
     
     except Exception as e:
         logger.error(f"Start trading error: {e}")
@@ -524,6 +592,110 @@ async def stop_trading():
     except Exception as e:
         logger.error(f"Stop trading error: {e}")
         raise HTTPException(500, str(e))
+
+class AutoStartRequest(BaseModel):
+    enabled: bool
+
+@app.post("/api/toggle_auto_start")
+async def toggle_auto_start(auto_start_data: AutoStartRequest):
+    """Toggle auto-start trading when market opens"""
+    try:
+        if not trading_state.is_authenticated:
+            raise HTTPException(400, "Not authenticated")
+        
+        trading_state.auto_start_enabled = auto_start_data.enabled
+        
+        if auto_start_data.enabled:
+            # Start the scheduler if not already running
+            if not trading_state.scheduler_thread or not trading_state.scheduler_thread.is_alive():
+                trading_state.scheduler_thread = threading.Thread(
+                    target=market_scheduler,
+                    daemon=True
+                )
+                trading_state.scheduler_thread.start()
+            
+            message = "Auto-start enabled. Trading will begin automatically when market opens."
+            logger.info("Auto-start trading enabled")
+        else:
+            message = "Auto-start disabled. Manual trading start required."
+            logger.info("Auto-start trading disabled")
+        
+        # Broadcast update to connected clients
+        await manager.broadcast({
+            "type": "auto_start_update",
+            "enabled": trading_state.auto_start_enabled,
+            "message": message
+        })
+        
+        return JSONResponse({
+            "success": True, 
+            "message": message,
+            "auto_start_enabled": trading_state.auto_start_enabled
+        })
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Auto-start toggle error: {e}")
+        raise HTTPException(500, str(e))
+
+# Market scheduler for auto-start
+def market_scheduler():
+    """Background scheduler to monitor market open/close and auto-start trading"""
+    logger.info("Market scheduler started")
+    
+    while trading_state.auto_start_enabled:
+        try:
+            current_time = datetime.now()
+            market_status = trading_state.get_market_status()
+            
+            # Check if market just opened and auto-start is enabled
+            if (market_status['status'] == 'Open' and 
+                not trading_state.is_trading and 
+                trading_state.is_authenticated):
+                
+                # Check if we're within the first few minutes of market open
+                market_open_time = current_time.replace(hour=9, minute=15, second=0, microsecond=0)
+                time_since_open = current_time - market_open_time
+                
+                # Auto-start within first 5 minutes of market open
+                if time_since_open.total_seconds() <= 300:  # 5 minutes
+                    logger.info("Auto-starting trading as market has opened")
+                    
+                    trading_state.is_trading = True
+                    trading_state.trading_thread = threading.Thread(
+                        target=run_trading_simulation,
+                        daemon=True
+                    )
+                    trading_state.trading_thread.start()
+                    
+                    # Broadcast auto-start notification
+                    asyncio.run(manager.broadcast({
+                        "type": "auto_start_triggered",
+                        "message": "Trading auto-started as market opened"
+                    }))
+            
+            # Auto-stop trading when market closes
+            elif (market_status['status'] in ['Post-Market', 'Weekend'] and 
+                  trading_state.is_trading):
+                
+                logger.info("Auto-stopping trading as market has closed")
+                trading_state.is_trading = False
+                
+                # Broadcast auto-stop notification
+                asyncio.run(manager.broadcast({
+                    "type": "auto_stop_triggered",
+                    "message": f"Trading auto-stopped: {market_status['message']}"
+                }))
+            
+            # Check every 30 seconds
+            time.sleep(30)
+            
+        except Exception as e:
+            logger.error(f"Market scheduler error: {e}")
+            time.sleep(60)  # Wait longer on error
+    
+    logger.info("Market scheduler stopped")
 
 @app.get("/api/status")
 async def get_status():
@@ -561,6 +733,16 @@ def run_trading_simulation():
     
     while trading_state.is_trading:
         try:
+            # Check if market is still open (stop trading if market closes)
+            if not trading_state.is_market_open():
+                logger.info("Market closed during trading session - stopping automatically")
+                trading_state.is_trading = False
+                asyncio.run(manager.broadcast({
+                    "type": "market_closed_stop",
+                    "message": "Trading stopped automatically - Market closed"
+                }))
+                break
+            
             # Simulate market analysis and trade execution
             if random.random() > 0.7:  # 30% chance of trade
                 stock = random.choice(stocks)
@@ -779,15 +961,43 @@ def create_web_files():
                         {% endif %}
                         
                         <hr>
-                        <div class="text-center">
+                        
+                        <!-- Market Status -->
+                        <div class="alert {% if state.market_open %}alert-success{% else %}alert-warning{% endif %} p-2 mb-3">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <div>
+                                    <strong><i class="fas fa-clock"></i> Market: {{ state.market_status.status }}</strong>
+                                    <br><small>{{ state.market_status.message }}</small>
+                                </div>
+                                <div class="text-end">
+                                    <small class="text-muted">
+                                        {% if state.market_status.countdown %}
+                                            {{ state.market_status.countdown }}
+                                        {% endif %}
+                                    </small>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Auto-Start Control -->
+                        {% if state.is_authenticated %}
+                        <div class="mb-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="autoStartToggle" 
+                                       {% if state.auto_start_enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="autoStartToggle">
+                                    <strong>Auto-Start at Market Open</strong>
+                                </label>
+                            </div>
                             <small class="text-muted">
-                                Market: {% if state.market_open %}
-                                    <span class="text-success"><i class="fas fa-circle"></i> Open</span>
+                                {% if state.auto_start_enabled %}
+                                    <i class="fas fa-check-circle text-success"></i> Trading will start automatically when market opens
                                 {% else %}
-                                    <span class="text-danger"><i class="fas fa-circle"></i> Closed</span>
+                                    <i class="fas fa-times-circle text-secondary"></i> Manual start required
                                 {% endif %}
                             </small>
                         </div>
+                        {% endif %}
                     </div>
                 </div>
             </div>
@@ -1099,6 +1309,28 @@ function handleWebSocketMessage(data) {
             updateLiveStatus(`Welcome ${data.user}! ${data.message}`, 'success');
             setTimeout(() => location.reload(), 2000);
             break;
+        case 'auto_start_triggered':
+            updateLiveStatus(data.message, 'success');
+            updateTradingStatus(true);
+            break;
+        case 'auto_stop_triggered':
+        case 'market_closed_stop':
+            updateLiveStatus(data.message, 'warning');
+            updateTradingStatus(false);
+            break;
+        case 'auto_start_update':
+            updateLiveStatus(data.message, 'info');
+            const autoStartToggle = document.getElementById('autoStartToggle');
+            if (autoStartToggle) {
+                autoStartToggle.checked = data.enabled;
+            }
+            break;
+        case 'budget_update':
+            updateBudgetDisplay(data.daily_budget, data.budget_used);
+            if (!data.is_trading) {
+                updateTradingStatus(false);
+            }
+            break;
     }
 }
 
@@ -1211,6 +1443,35 @@ async function stopTrading() {
     }
 }
 
+async function toggleAutoStart() {
+    const toggle = document.getElementById('autoStartToggle');
+    const enabled = toggle.checked;
+    
+    try {
+        const response = await fetch('/api/toggle_auto_start', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                enabled: enabled
+            })
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            updateLiveStatus(result.message, enabled ? 'success' : 'info');
+        } else {
+            alert('Failed to toggle auto-start: ' + result.message);
+            // Revert toggle state on failure
+            toggle.checked = !enabled;
+        }
+    } catch (error) {
+        alert('Error toggling auto-start: ' + error.message);
+        // Revert toggle state on error
+        toggle.checked = !enabled;
+    }
+}
+
 async function updateBudget() {
     const budgetForm = document.getElementById('budget-form');
     const formData = new FormData(budgetForm);
@@ -1288,6 +1549,12 @@ document.addEventListener('DOMContentLoaded', function() {
             e.preventDefault();
             updateBudget();
         });
+    }
+    
+    // Auto-start toggle
+    const autoStartToggle = document.getElementById('autoStartToggle');
+    if (autoStartToggle) {
+        autoStartToggle.addEventListener('change', toggleAutoStart);
     }
     
     // Check for URL parameters
