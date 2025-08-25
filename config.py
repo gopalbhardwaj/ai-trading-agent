@@ -38,14 +38,45 @@ class Config:
     TAKE_PROFIT_PERCENT = 0.04  # 4% take profit
     MAX_DAILY_LOSS = MAX_DAILY_BUDGET * 0.05  # 5% of daily budget
     
-    # Stock Universe (NSE stocks for intraday)
-    STOCK_UNIVERSE = [
+    # Dynamic Stock Universe Configuration
+    # Exchanges to scan for stocks
+    EXCHANGES = ['NSE', 'BSE']
+    
+    # Stock Filtering Criteria
+    MIN_MARKET_CAP = float(os.getenv('MIN_MARKET_CAP', 100))  # Minimum market cap in crores
+    MIN_AVG_VOLUME = int(os.getenv('MIN_AVG_VOLUME', 100000))  # Minimum average daily volume
+    MIN_PRICE = float(os.getenv('MIN_PRICE', 10))  # Minimum stock price
+    MAX_PRICE = float(os.getenv('MAX_PRICE', 10000))  # Maximum stock price
+    
+    # Stock Categories to Include
+    INCLUDE_STOCK_CATEGORIES = [
+        'EQ',  # Equity shares
+        'BE',  # Book closure
+        'BZ',  # Z category securities
+    ]
+    
+    # Stock Categories to Exclude (penny stocks, illiquid stocks, etc.)
+    EXCLUDE_STOCK_CATEGORIES = [
+        'IL',  # Illiquid stocks
+        'GS',  # Government securities
+        'BC',  # Book closure
+        'SM',  # SME stocks (unless specifically wanted)
+    ]
+    
+    # Screening Parameters
+    MAX_STOCKS_TO_ANALYZE = int(os.getenv('MAX_STOCKS_TO_ANALYZE', 500))  # Limit for performance
+    TOP_PERFORMERS_COUNT = int(os.getenv('TOP_PERFORMERS_COUNT', 50))  # Top stocks to analyze deeply
+    
+    # Volume-based filtering (for intraday liquidity)
+    MIN_VOLUME_MULTIPLIER = 1.5  # Stock must have >1.5x avg volume today
+    
+    # Sectors to focus on (optional filter)
+    FOCUS_SECTORS = os.getenv('FOCUS_SECTORS', '').split(',') if os.getenv('FOCUS_SECTORS') else []
+    
+    # Fallback stocks (if dynamic screening fails)
+    FALLBACK_STOCKS = [
         'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK',
-        'HINDUNILVR', 'KOTAKBANK', 'SBIN', 'BHARTIARTL', 'ITC',
-        'LT', 'AXISBANK', 'ASIANPAINT', 'MARUTI', 'HCLTECH',
-        'WIPRO', 'ULTRACEMCO', 'ONGC', 'TATAMOTORS', 'TECHM',
-        'SUNPHARMA', 'POWERGRID', 'NTPC', 'JSWSTEEL', 'DRREDDY',
-        'INDUSINDBK', 'ADANIPORTS', 'COALINDIA', 'TITAN', 'GRASIM'
+        'KOTAKBANK', 'SBIN', 'BHARTIARTL', 'ITC', 'LT'
     ]
     
     # Telegram Configuration (Optional)
