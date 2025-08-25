@@ -67,8 +67,12 @@ cd ai-trading-agent
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
+# Install build tools (prevents setuptools errors)
+pip install --upgrade pip setuptools wheel
+
 # Install dependencies
-pip install -r requirements.txt
+pip install -r requirements-core.txt  # Core features only
+# OR: pip install -r requirements.txt  # All features including ML & dashboard
 
 # Run the application
 python webapp.py
@@ -170,7 +174,8 @@ python demo.py
 ```bash
 git clone https://github.com/yourusername/ai-trading-agent.git
 cd ai-trading-agent
-pip install -r requirements.txt
+pip install --upgrade pip setuptools wheel
+pip install -r requirements-core.txt
 python webapp.py
 ```
 

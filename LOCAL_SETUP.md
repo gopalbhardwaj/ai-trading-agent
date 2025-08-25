@@ -70,14 +70,56 @@ source venv/bin/activate
 
 ### Step 4: Install Dependencies
 
+⚠️ **Important**: Install build tools first to avoid `setuptools.build_meta` errors:
+
 ```bash
-pip install --upgrade pip
+# Step 1: Upgrade pip and install build tools
+pip install --upgrade pip setuptools wheel
+
+# Step 2: Choose installation option
+# Option A: Core dependencies only (recommended for first setup)
+pip install -r requirements-core.txt
+
+# Option B: All dependencies (includes optional dashboard, ML features)
 pip install -r requirements.txt
+```
+
+**If you encounter build errors:**
+
+#### Windows:
+```cmd
+# Install Microsoft C++ Build Tools if needed
+# Download from: https://visualstudio.microsoft.com/visual-cpp-build-tools/
+
+# Then try:
+pip install --upgrade pip setuptools wheel
+pip install -r requirements-core.txt
+```
+
+#### macOS:
+```bash
+# Install Xcode command line tools
+xcode-select --install
+
+# Then try:
+pip3 install --upgrade pip setuptools wheel
+pip3 install -r requirements-core.txt
+```
+
+#### Linux:
+```bash
+# Install build essentials
+sudo apt-get update
+sudo apt-get install build-essential python3-dev
+
+# Then try:
+pip3 install --upgrade pip setuptools wheel
+pip3 install -r requirements-core.txt
 ```
 
 **If you encounter SSL errors during installation:**
 ```bash
-pip install --trusted-host pypi.org --trusted-host pypi.python.org --trusted-host files.pythonhosted.org -r requirements.txt
+pip install --trusted-host pypi.org --trusted-host pypi.python.org --trusted-host files.pythonhosted.org -r requirements-core.txt
 ```
 
 ### Step 5: Set Up Zerodha Kite API
