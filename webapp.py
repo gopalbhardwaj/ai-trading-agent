@@ -1347,6 +1347,14 @@ def create_web_files():
                                 <button class="btn btn-secondary" onclick="enableFallbackMode()">
                                     <i class="fas fa-tools"></i> Enable Fallback Mode
                                 </button>
+                                
+                                <button class="btn btn-primary" onclick="setupMcpIntegration()">
+                                    <i class="fas fa-rocket"></i> Setup Zerodha MCP
+                                </button>
+                                
+                                <button class="btn btn-success" onclick="checkTradingOptions()">
+                                    <i class="fas fa-chart-line"></i> Compare Trading Options
+                                </button>
                             </div>
                         {% endif %}
                         
@@ -2105,6 +2113,82 @@ async function enableFallbackMode() {
     }
 }
 
+  async function setupMcpIntegration() {
+      try {
+          const response = await fetch('/api/setup_mcp_integration', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'}
+          });
+          
+          const result = await response.json();
+          
+          if (result.success) {
+              alert('MCP setup guide provided. Check status messages for detailed steps.');
+          } else {
+              alert('Error: ' + result.message);
+          }
+      } catch (error) {
+          alert('Error: ' + error.message);
+      }
+  }
+  
+  async function checkTradingOptions() {
+      try {
+          const response = await fetch('/api/check_trading_options', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'}
+          });
+          
+          const result = await response.json();
+          
+          if (result.success) {
+              alert('Trading options analysis complete. Check status messages for detailed comparison.');
+          } else {
+              alert('Error: ' + result.message);
+          }
+      } catch (error) {
+          alert('Error: ' + error.message);
+      }
+  }
+  
+  // Initialize on page load
+    try {
+        const response = await fetch('/api/setup_mcp_integration', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'}
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            alert('MCP setup guide sent. Check status messages above.');
+        } else {
+            alert('Error: ' + result.message);
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+async function checkTradingOptions() {
+    try {
+        const response = await fetch('/api/check_trading_options', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'}
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            alert('Trading options analysis complete. Check status messages above.');
+        } else {
+            alert('Error: ' + result.message);
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
     connectWebSocket();
@@ -2572,6 +2656,119 @@ async def enable_fallback_mode():
         return JSONResponse({
             "success": False,
             "message": f"Error enabling fallback mode: {e}"
+        })
+
+@app.post("/api/setup_mcp_integration")
+async def setup_mcp_integration():
+    """Guide user through MCP setup for market data access"""
+    try:
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "🚀 HYBRID SOLUTION: Use Zerodha MCP for market data + Kite Connect for trading"
+        })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "📋 STEP 1: Install Zerodha MCP for FREE market data access"
+        })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "💻 For Claude Desktop: Add MCP config with 'npx mcp-remote https://mcp.kite.trade/sse'"
+        })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "🔧 This solves: ✅ Market data permissions ✅ Real-time quotes ✅ Portfolio analysis"
+        })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "⚠️ MCP Limitation: Cannot place orders (read-only market data)"
+        })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "💡 HYBRID APPROACH: MCP for data + Your current API for order placement"
+        })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "📞 Alternative: Contact Zerodha support to enable market data permissions on your API key"
+        })
+        
+        return JSONResponse({
+            "success": True,
+            "message": "MCP integration guide provided. MCP gives free market data but cannot place orders.",
+            "recommendation": "Use MCP for analysis + fix API permissions for trading"
+        })
+        
+    except Exception as e:
+        return JSONResponse({
+            "success": False,
+            "message": f"Error showing MCP guide: {e}"
+        })
+
+@app.post("/api/check_trading_options")
+async def check_trading_options():
+    """Show all available trading options and their capabilities"""
+    try:
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "🎯 TRADING OPTIONS ANALYSIS:"
+        })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "1️⃣ ZERODHA MCP: ✅ Free market data ❌ Cannot place orders"
+        })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "2️⃣ KITE CONNECT API: ✅ Can place orders ❌ Needs market data permissions"
+        })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "3️⃣ HYBRID SOLUTION: MCP (data) + API (trading) = Best of both"
+        })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "🚀 RECOMMENDATION: Get market data permissions OR use MCP + manual trading"
+        })
+        
+        options = {
+            "mcp_only": {
+                "capabilities": ["Market data", "Portfolio analysis", "Research"],
+                "limitations": ["No order placement", "No automated trading"],
+                "cost": "Free",
+                "setup": "Easy (no API permissions needed)"
+            },
+            "api_only": {
+                "capabilities": ["Order placement", "Automated trading", "Full control"],
+                "limitations": ["Needs market data permissions", "Permission setup required"],
+                "cost": "Free (but permissions needed)",
+                "setup": "Complex (permission requirements)"
+            },
+            "hybrid": {
+                "capabilities": ["Best market data", "Order placement", "Full analysis"],
+                "limitations": ["Two separate integrations"],
+                "cost": "Free",
+                "setup": "Medium (MCP + API permissions)"
+            }
+        }
+        
+        return JSONResponse({
+            "success": True,
+            "message": "Trading options analysis complete",
+            "options": options
+        })
+        
+    except Exception as e:
+        return JSONResponse({
+            "success": False,
+            "message": f"Error analyzing options: {e}"
         })
 
 if __name__ == "__main__":
