@@ -675,6 +675,58 @@ async def emergency_square_off():
         logger.error(f"Emergency square off error: {e}")
         raise HTTPException(500, str(e))
 
+@app.post("/api/generate_demo_trades")
+async def generate_demo_trades():
+    """Generate demo trades for testing UI"""
+    try:
+        if not trading_state.is_authenticated:
+            raise HTTPException(400, "Not authenticated")
+        
+        # Generate 3 demo trades
+        demo_stocks = ['RELIANCE', 'TCS', 'HDFCBANK']
+        demo_prices = [2450.50, 3890.25, 1678.80]
+        
+        for i, (stock, price) in enumerate(zip(demo_stocks, demo_prices)):
+            trade = {
+                'time': datetime.now().strftime('%H:%M:%S'),
+                'symbol': stock,
+                'action': 'BUY',
+                'quantity': 10 + i * 5,
+                'price': round(price, 2),
+                'value': round((10 + i * 5) * price, 2)
+            }
+            
+            # Add to trading state
+            trading_state.trades.append(trade)
+            
+            # Update budget and P&L for demo
+            trading_state.budget_used += trade['value']
+            trading_state.daily_pnl += (i * 50 - 25)  # Some demo P&L
+            
+            # Broadcast each trade
+            await manager.broadcast({
+                "type": "new_trade",
+                "trade": trade,
+                "pnl": trading_state.daily_pnl
+            })
+            
+            # Small delay between trades
+            await asyncio.sleep(0.5)
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "🎯 Generated 3 demo trades for testing purposes"
+        })
+        
+        return JSONResponse({
+            "success": True,
+            "message": "Demo trades generated successfully"
+        })
+    
+    except Exception as e:
+        logger.error(f"Demo trades error: {e}")
+        raise HTTPException(500, str(e))
+
 class AutoStartRequest(BaseModel):
     enabled: bool
 
@@ -1296,6 +1348,10 @@ def create_web_files():
                                 
                                 <button class="btn btn-warning" onclick="squareOffAll()">
                                     <i class="fas fa-times-circle"></i> Emergency Square Off
+                                </button>
+                                
+                                <button class="btn btn-info" onclick="generateDemoTrades()">
+                                    <i class="fas fa-vial"></i> Generate Demo Trades
                                 </button>
                             </div>
                         {% endif %}
@@ -1993,6 +2049,27 @@ async function toggleTradingMode() {
         alert('Error toggling trading mode: ' + error.message);
         // Revert toggle state on error
         toggle.checked = !useRealTrading;
+    }
+}
+
+async function generateDemoTrades() {
+    try {
+        updateLiveStatus('🎯 Generating demo trades for testing...', 'info');
+        
+        const response = await fetch('/api/generate_demo_trades', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'}
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            updateLiveStatus(result.message, 'success');
+        } else {
+            updateLiveStatus('Failed to generate demo trades: ' + result.message, 'danger');
+        }
+    } catch (error) {
+        updateLiveStatus('Error generating demo trades: ' + error.message, 'danger');
     }
 }
 

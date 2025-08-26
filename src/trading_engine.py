@@ -246,16 +246,26 @@ class TradingEngine:
                     # Create basic signals for fallback (demo purposes)
                     signals = []
                     for stock in fallback_stocks[:2]:  # Limit to 2 for safety
+                        # Use realistic prices for demo
+                        demo_prices = {
+                            'RELIANCE': 2450.0,
+                            'TCS': 3890.0, 
+                            'HDFCBANK': 1678.0,
+                            'INFY': 1825.0,
+                            'ICICIBANK': 975.0
+                        }
+                        
                         signals.append({
                             'symbol': stock,
-                            'signal': 'BUY',
+                            'signal': 'BUY',  # Demo mode - always BUY for simplicity
                             'strength': 0.6,
-                            'price': 100.0,  # Placeholder price
+                            'price': demo_prices.get(stock, 100.0),
                             'confidence': 0.7
                         })
                     
                     if signals:
-                        logger.info(f"🔄 Generated {len(signals)} fallback signals")
+                        logger.info(f"🔄 Generated {len(signals)} fallback signals for demo trading")
+                        logger.info("⚠️ DEMO MODE: Using fallback signals for testing purposes")
                     else:
                         logger.info("📊 No fallback signals generated - will retry in next cycle")
                         return
@@ -386,6 +396,41 @@ class TradingEngine:
                 self.active_orders[order_id] = order_data
                 self.risk_manager.record_trade(order_data)
                 
+                # Create trade record for UI
+                trade_record = {
+                    'time': datetime.now().strftime('%H:%M:%S'),
+                    'symbol': symbol,
+                    'action': signal_type,
+                    'quantity': quantity,
+                    'price': round(price, 2),
+                    'value': round(quantity * price, 2)
+                }
+                
+                # Update webapp state and broadcast to UI
+                try:
+                    # Import here to avoid circular import
+                    import asyncio
+                    from webapp import trading_state, manager
+                    
+                    # Add to trading state
+                    trading_state.trades.append(trade_record)
+                    
+                    # Update budget used (for BUY orders)
+                    if signal_type == 'BUY':
+                        trading_state.budget_used += trade_record['value']
+                    
+                    # Broadcast trade to UI
+                    asyncio.run(manager.broadcast({
+                        "type": "new_trade",
+                        "trade": trade_record,
+                        "pnl": trading_state.daily_pnl
+                    }))
+                    
+                    logger.info(f"✅ Trade broadcasted to UI: {signal_type} {quantity} {symbol}")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to broadcast trade to UI: {e}")
+                
                 logger.info(f"✅ Order placed successfully for {symbol}")
                 logger.info(f"📄 Order ID: {order_id}")
                 logger.info(f"👀 Starting order monitoring...")
@@ -413,6 +458,8 @@ class TradingEngine:
             max_wait_time = 300  # 5 minutes
             start_time = time.time()
             
+            logger.info(f"👀 Monitoring order {order_id} for {symbol}")
+            
             while time.time() - start_time < max_wait_time:
                 try:
                     # Get order status
@@ -420,13 +467,39 @@ class TradingEngine:
                     current_order = next((o for o in orders if o['order_id'] == order_id), None)
                     
                     if not current_order:
-                        logger.warning(f"Order {order_id} not found")
+                        logger.warning(f"Order {order_id} not found in order book")
                         break
                     
                     status = current_order.get('status', '')
+                    filled_quantity = current_order.get('filled_quantity', 0)
+                    average_price = current_order.get('average_price', 0)
                     
                     if status == 'COMPLETE':
                         logger.info(f"✅ Order filled: {symbol} ({order_id})")
+                        logger.info(f"📊 Filled: {filled_quantity} shares @ ₹{average_price}")
+                        
+                        # Update trade record with actual fill details
+                        try:
+                            import asyncio
+                            from webapp import trading_state, manager
+                            
+                            # Update the trade record with actual fill price
+                            for trade in reversed(trading_state.trades):
+                                if (trade['symbol'] == symbol and 
+                                    abs(trade['quantity'] - filled_quantity) <= 1):  # Allow small rounding differences
+                                    trade['price'] = round(average_price, 2)
+                                    trade['value'] = round(filled_quantity * average_price, 2)
+                                    trade['status'] = 'FILLED'
+                                    break
+                            
+                            # Broadcast fill notification
+                            asyncio.run(manager.broadcast({
+                                "type": "trading_status",
+                                "message": f"✅ Order FILLED: {trade['action']} {filled_quantity} {symbol} @ ₹{average_price:.2f}"
+                            }))
+                            
+                        except Exception as e:
+                            logger.warning(f"Failed to update UI for order fill: {e}")
                         
                         # Add to monitoring positions
                         self.monitoring_positions[order_id] = order_data
@@ -439,6 +512,24 @@ class TradingEngine:
                         
                     elif status in ['CANCELLED', 'REJECTED']:
                         logger.warning(f"❌ Order {status.lower()}: {symbol} ({order_id})")
+                        
+                        # Remove from UI if cancelled/rejected
+                        try:
+                            import asyncio
+                            from webapp import trading_state, manager
+                            
+                            # Remove from trades list if order was cancelled
+                            trading_state.trades = [t for t in trading_state.trades 
+                                                 if not (t['symbol'] == symbol and t.get('order_id') == order_id)]
+                            
+                            # Broadcast cancellation
+                            asyncio.run(manager.broadcast({
+                                "type": "trading_status",
+                                "message": f"❌ Order {status}: {symbol} - {current_order.get('status_message', 'No reason provided')}"
+                            }))
+                            
+                        except Exception as e:
+                            logger.warning(f"Failed to update UI for order cancellation: {e}")
                         
                         # Remove from active orders
                         if order_id in self.active_orders:
@@ -455,7 +546,12 @@ class TradingEngine:
             # Timeout handling
             if time.time() - start_time >= max_wait_time:
                 logger.warning(f"⏰ Order timeout: {symbol} ({order_id}). Cancelling...")
-                self.zerodha_client.cancel_order(order_id)
+                success = self.zerodha_client.cancel_order(order_id)
+                
+                if success:
+                    logger.info(f"✅ Order cancelled due to timeout: {symbol}")
+                else:
+                    logger.warning(f"❌ Failed to cancel timed out order: {symbol}")
                 
                 if order_id in self.active_orders:
                     del self.active_orders[order_id]
