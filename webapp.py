@@ -197,6 +197,17 @@ class TradingState:
                 'next_close': market_close_time.strftime('%Y-%m-%d %H:%M:%S'),
                 'countdown': str(time_to_close).split('.')[0]
             }
+    
+    def save_access_token(self):
+        """Save access token to file for persistence"""
+        try:
+            if self.access_token:
+                with open('.tokens', 'w') as f:
+                    f.write(f"access_token={self.access_token}\n")
+                    f.write(f"timestamp={int(time.time())}\n")
+                logger.info("Access token saved successfully")
+        except Exception as e:
+            logger.warning(f"Failed to save access token: {e}")
 
 trading_state = TradingState()
 
@@ -343,22 +354,20 @@ USE_LIVE_DATA=true
 @app.post("/api/configure")
 async def configure_api(
     api_key: str = Form(...),
-    api_secret: str = Form(...),
-    daily_budget: float = Form(...)
+    api_secret: str = Form(...)
 ):
-    """Configure API credentials and budget"""
+    """Configure API credentials"""
     try:
         # Validate inputs
         if len(api_key) < 10 or len(api_secret) < 10:
             raise HTTPException(400, "Invalid API credentials")
         
-        if daily_budget < 5000:
-            raise HTTPException(400, "Minimum budget is ₹5,000")
-        
         # Save configuration
         trading_state.api_key = api_key
         trading_state.api_secret = api_secret
-        trading_state.daily_budget = daily_budget
+        # Keep existing daily_budget or use default
+        if not trading_state.daily_budget:
+            trading_state.daily_budget = 10000
         
         # Save to .env file
         env_content = f"""# Zerodha Kite API Configuration
@@ -366,7 +375,7 @@ KITE_API_KEY={api_key}
 KITE_API_SECRET={api_secret}
 
 # Trading Configuration
-MAX_DAILY_BUDGET={daily_budget}
+MAX_DAILY_BUDGET={trading_state.daily_budget}
 RISK_PER_TRADE=0.02
 MAX_POSITIONS=5
 
