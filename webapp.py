@@ -861,6 +861,18 @@ def run_real_trading():
         # Initialize trading engine with authenticated client
         if not trading_state.trading_engine:
             trading_state.trading_engine = TradingEngine(kite_client=trading_state.kite_client)
+            
+            # Set up log broadcasting for trading engine
+            trading_logger = logging.getLogger('src.trading_engine')
+            log_handler = WebSocketLogHandler(manager)
+            log_handler.setLevel(logging.INFO)
+            trading_logger.addHandler(log_handler)
+        
+        # Broadcast initialization status
+        asyncio.run(manager.broadcast({
+            "type": "trading_status",
+            "message": "🔧 Initializing trading engine components..."
+        }))
         
         # Initialize trading engine 
         if not trading_state.trading_engine.initialize():
@@ -881,11 +893,18 @@ def run_real_trading():
         }))
         
         # Set budget from webapp
-        trading_state.trading_engine.daily_budget = trading_state.daily_budget
+        if hasattr(trading_state.trading_engine, 'daily_budget'):
+            trading_state.trading_engine.daily_budget = trading_state.daily_budget
         
-        # Run trading loop
+        # Initialize counters for feedback
+        analysis_count = 0
+        last_status_time = time.time()
+        
+        # Run trading loop with detailed status updates
         while trading_state.is_trading:
             try:
+                current_time = time.time()
+                
                 # Check if market is still open
                 if not trading_state.is_market_open():
                     logger.info("Market closed during trading session - stopping")
@@ -896,43 +915,117 @@ def run_real_trading():
                     }))
                     break
                 
-                # Get current status from trading engine
-                status = trading_state.trading_engine.get_status()
-                
-                # Update trading state with real data
-                if status:
-                    risk_summary = status.get('risk_summary', {})
-                    trading_state.daily_pnl = risk_summary.get('daily_pnl', 0)
-                    trading_state.budget_used = risk_summary.get('budget_used', 0)
+                # Broadcast periodic status updates
+                if current_time - last_status_time >= 30:  # Every 30 seconds
+                    analysis_count += 1
+                    market_status = "Open" if trading_state.is_market_open() else "Closed"
                     
-                    # Broadcast status update
                     asyncio.run(manager.broadcast({
-                        "type": "status_update",
-                        "data": {
-                            "daily_pnl": trading_state.daily_pnl,
-                            "budget_used": trading_state.budget_used,
-                            "trades_count": len(trading_state.trades),
-                            "positions_count": status.get('monitoring_positions', 0)
-                        }
+                        "type": "trading_status",
+                        "message": f"🔍 Analysis #{analysis_count} - Market: {market_status} - Scanning for opportunities..."
                     }))
+                    last_status_time = current_time
+                
+                # Get current status from trading engine
+                try:
+                    status = trading_state.trading_engine.get_status()
+                    
+                    if status:
+                        risk_summary = status.get('risk_summary', {})
+                        trading_state.daily_pnl = risk_summary.get('daily_pnl', 0)
+                        trading_state.budget_used = risk_summary.get('budget_used', 0)
+                        
+                        # Broadcast detailed status update
+                        asyncio.run(manager.broadcast({
+                            "type": "status_update",
+                            "data": {
+                                "daily_pnl": trading_state.daily_pnl,
+                                "budget_used": trading_state.budget_used,
+                                "trades_count": len(trading_state.trades),
+                                "positions_count": status.get('monitoring_positions', 0),
+                                "active_orders": status.get('active_orders', 0)
+                            }
+                        }))
+                except Exception as e:
+                    logger.warning(f"Could not get trading engine status: {e}")
+                
+                # Broadcast market analysis start
+                asyncio.run(manager.broadcast({
+                    "type": "trading_status", 
+                    "message": "📊 Analyzing market sentiment and screening stocks..."
+                }))
                 
                 # Run one iteration of analysis and trading
-                trading_state.trading_engine._analyze_and_trade()
+                try:
+                    trading_state.trading_engine._analyze_and_trade()
+                except Exception as e:
+                    logger.error(f"Error in market analysis: {e}")
+                    asyncio.run(manager.broadcast({
+                        "type": "trading_status",
+                        "message": f"⚠️ Analysis error: {str(e)[:100]}... Continuing..."
+                    }))
+                
+                # Broadcast position monitoring
+                asyncio.run(manager.broadcast({
+                    "type": "trading_status",
+                    "message": "👀 Monitoring existing positions and risk levels..."
+                }))
                 
                 # Check positions
-                trading_state.trading_engine._monitor_positions()
+                try:
+                    trading_state.trading_engine._monitor_positions()
+                except Exception as e:
+                    logger.error(f"Error in position monitoring: {e}")
+                    asyncio.run(manager.broadcast({
+                        "type": "trading_status",
+                        "message": f"⚠️ Position monitoring error: {str(e)[:100]}... Continuing..."
+                    }))
                 
                 # Risk check
-                trading_state.trading_engine._risk_check()
+                try:
+                    trading_state.trading_engine._risk_check()
+                except Exception as e:
+                    logger.error(f"Error in risk check: {e}")
+                    asyncio.run(manager.broadcast({
+                        "type": "trading_status",
+                        "message": f"⚠️ Risk check error: {str(e)[:100]}... Continuing..."
+                    }))
                 
-                # Sleep between iterations
-                time.sleep(60)  # Check every minute
+                # Broadcast waiting message
+                asyncio.run(manager.broadcast({
+                    "type": "trading_status",
+                    "message": "⏳ Waiting for next analysis cycle (60 seconds)..."
+                }))
+                
+                # Sleep between iterations with progress updates
+                for i in range(60):  # 60 seconds total
+                    if not trading_state.is_trading:
+                        break
+                    time.sleep(1)
+                    
+                    # Update countdown every 15 seconds
+                    if i % 15 == 0 and i > 0:
+                        remaining = 60 - i
+                        asyncio.run(manager.broadcast({
+                            "type": "trading_status",
+                            "message": f"⏳ Next analysis in {remaining} seconds..."
+                        }))
                 
             except Exception as e:
                 logger.error(f"Error in real trading loop: {e}")
+                asyncio.run(manager.broadcast({
+                    "type": "trading_status",
+                    "message": f"❌ Trading loop error: {str(e)[:100]}... Retrying in 30 seconds..."
+                }))
                 time.sleep(30)
         
         logger.info("🛑 Real trading engine stopped")
+        
+        # Final status message
+        asyncio.run(manager.broadcast({
+            "type": "trading_stopped",
+            "message": "🛑 Real trading engine has been stopped"
+        }))
         
     except Exception as e:
         logger.error(f"Real trading error: {e}")
@@ -1006,6 +1099,29 @@ def run_trading_simulation():
         except Exception as e:
             logger.error(f"Trading simulation error: {e}")
             time.sleep(10)
+
+# Custom log handler to broadcast messages to UI
+class WebSocketLogHandler(logging.Handler):
+    def __init__(self, broadcast_manager):
+        super().__init__()
+        self.broadcast_manager = broadcast_manager
+        
+    def emit(self, record):
+        try:
+            # Only broadcast trading engine logs
+            if record.name == 'src.trading_engine' and record.levelno >= logging.INFO:
+                message = self.format(record)
+                # Remove log level and timestamp for cleaner UI display
+                clean_message = message.split(' - ')[-1] if ' - ' in message else message
+                
+                # Broadcast to UI
+                asyncio.run(self.broadcast_manager.broadcast({
+                    "type": "trading_log",
+                    "message": clean_message,
+                    "level": record.levelname.lower()
+                }))
+        except:
+            pass  # Ignore errors in log broadcasting
 
 # Create templates and static files
 def create_web_files():
@@ -1550,6 +1666,10 @@ function handleWebSocketMessage(data) {
             updateTradingStatus(false);
             updateLiveStatus(data.message, 'warning');
             break;
+        case 'trading_status':
+            // Display ongoing trading engine status
+            updateLiveStatus(data.message, 'info');
+            break;
         case 'auth_success':
             updateLiveStatus(`Welcome ${data.user}! ${data.message}`, 'success');
             setTimeout(() => location.reload(), 2000);
@@ -1591,6 +1711,32 @@ function handleWebSocketMessage(data) {
                 updateBudgetDisplay(trading_state.daily_budget, 0); // Reset budget used
                 trading_state.positions = []; // Clear positions
                 addTradeToTable({time: 'N/A', symbol: 'N/A', action: 'N/A', quantity: 0, price: 0, value: 0});
+            }
+            break;
+        case 'trading_log':
+            // Display trading engine logs in the UI
+            const logAlert = document.getElementById('live-updates');
+            if (logAlert) {
+                let iconClass = 'fas fa-terminal';
+                let alertClass = 'alert-info';
+                
+                // Determine icon and style based on log level
+                if (data.level === 'warning') {
+                    iconClass = 'fas fa-exclamation-triangle';
+                    alertClass = 'alert-warning';
+                } else if (data.level === 'error') {
+                    iconClass = 'fas fa-exclamation-circle';
+                    alertClass = 'alert-danger';
+                } else if (data.message.includes('✅') || data.message.includes('🚀')) {
+                    iconClass = 'fas fa-check-circle';
+                    alertClass = 'alert-success';
+                }
+                
+                logAlert.innerHTML = `
+                    <i class="${iconClass}"></i> 
+                    <strong>TRADING ENGINE:</strong> ${data.message}
+                `;
+                logAlert.className = `alert ${alertClass}`;
             }
             break;
     }
