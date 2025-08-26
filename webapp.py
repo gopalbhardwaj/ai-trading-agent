@@ -128,6 +128,7 @@ class TradingState:
         # Real trading engine
         self.trading_engine = None
         self.use_real_trading = True  # Set to False for simulation mode
+        self.use_fallback_mode = False  # New attribute for fallback mode
     
     def to_dict(self):
         return {
@@ -142,7 +143,8 @@ class TradingState:
             'auto_start_enabled': self.auto_start_enabled,
             'market_status': self.get_market_status(),
             'use_real_trading': self.use_real_trading,
-            'trading_engine_available': TRADING_ENGINE_AVAILABLE
+            'trading_engine_available': TRADING_ENGINE_AVAILABLE,
+            'use_fallback_mode': self.use_fallback_mode
         }
     
     def is_market_open(self):
@@ -1337,6 +1339,14 @@ def create_web_files():
                                 <button class="btn btn-info" onclick="testApiConnection()">
                                     <i class="fas fa-vial"></i> Test API Connection
                                 </button>
+                                
+                                <button class="btn btn-warning" onclick="showPermissionsGuide()">
+                                    <i class="fas fa-key"></i> Fix API Permissions
+                                </button>
+                                
+                                <button class="btn btn-secondary" onclick="enableFallbackMode()">
+                                    <i class="fas fa-tools"></i> Enable Fallback Mode
+                                </button>
                             </div>
                         {% endif %}
                         
@@ -2057,6 +2067,44 @@ async function testApiConnection() {
     }
 }
 
+async function showPermissionsGuide() {
+    try {
+        const response = await fetch('/api/fix_permissions_guide', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'}
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            alert('Permissions guide sent. Check status messages above.');
+        } else {
+            alert('Error: ' + result.message);
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+async function enableFallbackMode() {
+    try {
+        const response = await fetch('/api/enable_fallback_mode', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'}
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            alert('Fallback mode enabled. You can now trade using order book data.');
+        } else {
+            alert('Error: ' + result.message);
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
     connectWebSocket();
@@ -2275,13 +2323,90 @@ async def test_api_connection():
                 })
                 return JSONResponse({"success": False, "message": "Quote API failed"})
         except Exception as e:
+            error_msg = str(e).lower()
+            if "insufficient permission" in error_msg or "permission" in error_msg:
+                await manager.broadcast({
+                    "type": "trading_status",
+                    "message": "❌ Quote API: INSUFFICIENT PERMISSIONS - Your API key needs market data access"
+                })
+                await manager.broadcast({
+                    "type": "trading_status", 
+                    "message": "🔧 FIX: Go to developers.kite.trade → Your App → Enable 'Market data' permissions"
+                })
+                await manager.broadcast({
+                    "type": "trading_status",
+                    "message": "📞 Or contact Zerodha support to enable market data access for your API key"
+                })
+                return JSONResponse({
+                    "success": False, 
+                    "message": "Quote API Permission Error: Your API key needs market data permissions. Visit developers.kite.trade to enable market data access.",
+                    "fix_required": "Enable market data permissions in Kite Connect developer console"
+                })
+            else:
+                await manager.broadcast({
+                    "type": "trading_status",
+                    "message": f"❌ Quote API Error: {str(e)[:100]}"
+                })
+                return JSONResponse({"success": False, "message": f"Quote API error: {e}"})
+        
+        # Test 5: Historical Data API (if quote API works)
+        try:
             await manager.broadcast({
                 "type": "trading_status",
-                "message": f"❌ Quote API Error: {str(e)[:100]}"
+                "message": "🔍 Testing Historical Data API..."
             })
-            return JSONResponse({"success": False, "message": f"Quote API error: {e}"})
+            
+            # Get RELIANCE instrument token from quote API result if available
+            instruments = trading_state.kite_client.instruments('NSE')
+            reliance_token = None
+            for instrument in instruments:
+                if instrument.get('tradingsymbol') == 'RELIANCE':
+                    reliance_token = instrument.get('instrument_token')
+                    break
+            
+            if reliance_token:
+                from datetime import datetime, timedelta
+                to_date = datetime.now()
+                from_date = to_date - timedelta(days=1)
+                
+                historical_data = trading_state.kite_client.historical_data(
+                    instrument_token=reliance_token,
+                    from_date=from_date,
+                    to_date=to_date,
+                    interval='minute'
+                )
+                
+                if historical_data and len(historical_data) > 0:
+                    await manager.broadcast({
+                        "type": "trading_status",
+                        "message": f"✅ Historical Data API: Got {len(historical_data)} candles"
+                    })
+                    logger.info(f"✅ Historical Data API test passed: {len(historical_data)} candles")
+                else:
+                    await manager.broadcast({
+                        "type": "trading_status",
+                        "message": "⚠️ Historical Data API: No data (market may be closed)"
+                    })
+            else:
+                await manager.broadcast({
+                    "type": "trading_status",
+                    "message": "⚠️ Historical Data API: Could not find RELIANCE token"
+                })
+                
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "insufficient permission" in error_msg or "permission" in error_msg:
+                await manager.broadcast({
+                    "type": "trading_status",
+                    "message": "❌ Historical Data API: INSUFFICIENT PERMISSIONS"
+                })
+            else:
+                await manager.broadcast({
+                    "type": "trading_status",
+                    "message": f"⚠️ Historical Data API: {str(e)[:100]}"
+                })
         
-        # Test 5: Orders API (according to official docs)
+        # Test 6: Orders API (according to official docs)
         try:
             await manager.broadcast({
                 "type": "trading_status",
@@ -2300,7 +2425,7 @@ async def test_api_connection():
             })
             return JSONResponse({"success": False, "message": f"Orders API error: {e}"})
         
-        # Test 6: Positions API (according to official docs)
+        # Test 7: Positions API (according to official docs)
         try:
             await manager.broadcast({
                 "type": "trading_status",
@@ -2348,6 +2473,105 @@ async def test_api_connection():
         return JSONResponse({
             "success": False,
             "message": f"Critical error during API testing: {e}"
+        })
+
+@app.post("/api/fix_permissions_guide")
+async def fix_permissions_guide():
+    """Provide step-by-step guide to fix API permissions"""
+    try:
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "📋 STEP-BY-STEP GUIDE: How to fix API permissions"
+        })
+        
+        await manager.broadcast({
+            "type": "trading_status", 
+            "message": "1️⃣ Go to https://developers.kite.trade"
+        })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "2️⃣ Login with your Zerodha credentials"
+        })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "3️⃣ Click on your app name in the dashboard"
+        })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "4️⃣ Look for 'Permissions' or 'Market Data' section"
+        })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "5️⃣ Enable: ✅ Market Data ✅ Historical Data ✅ Quote Data"
+        })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "6️⃣ Save changes and wait 5-10 minutes for activation"
+        })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "7️⃣ If permissions not available, contact: support@zerodha.com"
+        })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "📞 Email Zerodha: Request market data permissions for API key"
+        })
+        
+        return JSONResponse({
+            "success": True,
+            "message": "Permission fix guide sent. Check status messages above."
+        })
+        
+    except Exception as e:
+        return JSONResponse({
+            "success": False,
+            "message": f"Error showing guide: {e}"
+        })
+
+@app.post("/api/enable_fallback_mode")
+async def enable_fallback_mode():
+    """Enable trading mode that works without market data permissions"""
+    try:
+        if not trading_state.is_authenticated:
+            return JSONResponse({
+                "success": False,
+                "message": "Not authenticated"
+            })
+        
+        # Set fallback mode in trading state
+        trading_state.use_fallback_mode = True
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "🔄 FALLBACK MODE ENABLED: Trading without live market data"
+        })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "⚠️ Note: Will use order book data instead of live quotes"
+        })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "💡 This allows basic trading while you fix API permissions"
+        })
+        
+        return JSONResponse({
+            "success": True,
+            "message": "Fallback mode enabled. You can now trade using order book data."
+        })
+        
+    except Exception as e:
+        return JSONResponse({
+            "success": False,
+            "message": f"Error enabling fallback mode: {e}"
         })
 
 if __name__ == "__main__":
