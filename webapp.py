@@ -675,57 +675,7 @@ async def emergency_square_off():
         logger.error(f"Emergency square off error: {e}")
         raise HTTPException(500, str(e))
 
-@app.post("/api/generate_demo_trades")
-async def generate_demo_trades():
-    """Generate demo trades for testing UI"""
-    try:
-        if not trading_state.is_authenticated:
-            raise HTTPException(400, "Not authenticated")
-        
-        # Generate 3 demo trades
-        demo_stocks = ['RELIANCE', 'TCS', 'HDFCBANK']
-        demo_prices = [2450.50, 3890.25, 1678.80]
-        
-        for i, (stock, price) in enumerate(zip(demo_stocks, demo_prices)):
-            trade = {
-                'time': datetime.now().strftime('%H:%M:%S'),
-                'symbol': stock,
-                'action': 'BUY',
-                'quantity': 10 + i * 5,
-                'price': round(price, 2),
-                'value': round((10 + i * 5) * price, 2)
-            }
-            
-            # Add to trading state
-            trading_state.trades.append(trade)
-            
-            # Update budget and P&L for demo
-            trading_state.budget_used += trade['value']
-            trading_state.daily_pnl += (i * 50 - 25)  # Some demo P&L
-            
-            # Broadcast each trade
-            await manager.broadcast({
-                "type": "new_trade",
-                "trade": trade,
-                "pnl": trading_state.daily_pnl
-            })
-            
-            # Small delay between trades
-            await asyncio.sleep(0.5)
-        
-        await manager.broadcast({
-            "type": "trading_status",
-            "message": "🎯 Generated 3 demo trades for testing purposes"
-        })
-        
-        return JSONResponse({
-            "success": True,
-            "message": "Demo trades generated successfully"
-        })
-    
-    except Exception as e:
-        logger.error(f"Demo trades error: {e}")
-        raise HTTPException(500, str(e))
+
 
 class AutoStartRequest(BaseModel):
     enabled: bool
@@ -896,195 +846,229 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # Real trading function
 def run_real_trading():
-    """Run real automated trading using TradingEngine"""
+    """Enhanced real trading function with comprehensive error handling and debugging"""
     try:
-        logger.info("🚀 Starting REAL trading engine...")
+        logger.info("🚀 Starting REAL trading engine with enhanced debugging...")
         
-        # Check if we have authentication
+        # STEP 1: Validate Authentication
         if not trading_state.is_authenticated or not trading_state.kite_client:
-            logger.error("❌ Not authenticated with Zerodha")
+            logger.error("❌ CRITICAL: Not authenticated with Zerodha")
+            logger.error("🔍 DEBUG STEPS:")
+            logger.error("   1. Go to setup page and enter correct API keys")
+            logger.error("   2. Complete the authentication flow")
+            logger.error("   3. Ensure access token is valid")
             trading_state.is_trading = False
             asyncio.run(manager.broadcast({
-                "type": "trading_stopped",
-                "message": "❌ Authentication required for real trading"
+                "type": "trading_stopped", 
+                "message": "❌ Authentication required - Go to setup and authenticate with Zerodha"
             }))
             return
-        
-        # Initialize trading engine with authenticated client
-        if not trading_state.trading_engine:
-            trading_state.trading_engine = TradingEngine(kite_client=trading_state.kite_client)
-            
-            # Set up log broadcasting for trading engine
-            trading_logger = logging.getLogger('src.trading_engine')
-            log_handler = WebSocketLogHandler(manager)
-            log_handler.setLevel(logging.INFO)
-            trading_logger.addHandler(log_handler)
-        
-        # Broadcast initialization status
-        asyncio.run(manager.broadcast({
-            "type": "trading_status",
-            "message": "🔧 Initializing trading engine components..."
-        }))
-        
-        # Initialize trading engine 
-        if not trading_state.trading_engine.initialize():
-            logger.error("Failed to initialize trading engine")
-            trading_state.is_trading = False
-            asyncio.run(manager.broadcast({
-                "type": "trading_stopped",
-                "message": "❌ Failed to initialize trading engine"
-            }))
-            return
-        
-        logger.info("✅ Real trading engine initialized successfully")
-        
-        # Broadcast successful initialization
-        asyncio.run(manager.broadcast({
-            "type": "trading_started",
-            "message": "🚀 Real trading engine is now active and analyzing markets"
-        }))
-        
-        # Set budget from webapp
-        if hasattr(trading_state.trading_engine, 'daily_budget'):
-            trading_state.trading_engine.daily_budget = trading_state.daily_budget
-        
-        # Initialize counters for feedback
-        analysis_count = 0
-        last_status_time = time.time()
-        
-        # Run trading loop with detailed status updates
-        while trading_state.is_trading:
-            try:
-                current_time = time.time()
-                
-                # Check if market is still open
-                if not trading_state.is_market_open():
-                    logger.info("Market closed during trading session - stopping")
-                    trading_state.is_trading = False
-                    asyncio.run(manager.broadcast({
-                        "type": "market_closed_stop",
-                        "message": "Trading stopped - Market closed"
-                    }))
-                    break
-                
-                # Broadcast periodic status updates
-                if current_time - last_status_time >= 30:  # Every 30 seconds
-                    analysis_count += 1
-                    market_status = "Open" if trading_state.is_market_open() else "Closed"
-                    
-                    asyncio.run(manager.broadcast({
-                        "type": "trading_status",
-                        "message": f"🔍 Analysis #{analysis_count} - Market: {market_status} - Scanning for opportunities..."
-                    }))
-                    last_status_time = current_time
-                
-                # Get current status from trading engine
-                try:
-                    status = trading_state.trading_engine.get_status()
-                    
-                    if status:
-                        risk_summary = status.get('risk_summary', {})
-                        trading_state.daily_pnl = risk_summary.get('daily_pnl', 0)
-                        trading_state.budget_used = risk_summary.get('budget_used', 0)
-                        
-                        # Broadcast detailed status update
-                        asyncio.run(manager.broadcast({
-                            "type": "status_update",
-                            "data": {
-                                "daily_pnl": trading_state.daily_pnl,
-                                "budget_used": trading_state.budget_used,
-                                "trades_count": len(trading_state.trades),
-                                "positions_count": status.get('monitoring_positions', 0),
-                                "active_orders": status.get('active_orders', 0)
-                            }
-                        }))
-                except Exception as e:
-                    logger.warning(f"Could not get trading engine status: {e}")
-                
-                # Broadcast market analysis start
+
+        # STEP 2: Test API Connection
+        try:
+            profile = trading_state.kite_client.profile()
+            if not profile or 'user_name' not in profile:
+                logger.error("❌ CRITICAL: Invalid API response - authentication may have expired")
+                logger.error("🔍 Re-authenticate on setup page")
+                trading_state.is_trading = False
+                asyncio.run(manager.broadcast({
+                    "type": "trading_stopped", 
+                    "message": "❌ API authentication expired - Please re-authenticate"
+                }))
+                return
+            else:
+                logger.info(f"✅ API Authentication verified - User: {profile['user_name']}")
                 asyncio.run(manager.broadcast({
                     "type": "trading_status", 
-                    "message": "📊 Analyzing market sentiment and screening stocks..."
+                    "message": f"✅ API authenticated as {profile['user_name']}"
                 }))
                 
-                # Run one iteration of analysis and trading
-                try:
-                    trading_state.trading_engine._analyze_and_trade()
-                except Exception as e:
-                    logger.error(f"Error in market analysis: {e}")
-                    asyncio.run(manager.broadcast({
-                        "type": "trading_status",
-                        "message": f"⚠️ Analysis error: {str(e)[:100]}... Continuing..."
-                    }))
-                
-                # Broadcast position monitoring
+        except Exception as auth_test_error:
+            logger.error(f"❌ CRITICAL: API connection test failed: {auth_test_error}")
+            logger.error("🔍 DEBUG: Check network connectivity and API service status")
+            trading_state.is_trading = False
+            asyncio.run(manager.broadcast({
+                "type": "trading_stopped", 
+                "message": f"❌ API connection failed: {str(auth_test_error)[:100]}"
+            }))
+            return
+
+        # STEP 3: Initialize Trading Engine
+        asyncio.run(manager.broadcast({"type": "trading_status", "message": "🔧 Initializing trading engine components..."}))
+        
+        if not trading_state.trading_engine:
+            trading_state.trading_engine = TradingEngine(kite_client=trading_state.kite_client)
+
+        # Set up log broadcasting for trading engine
+        trading_logger = logging.getLogger('src.trading_engine')
+        log_handler = WebSocketLogHandler(manager)
+        log_handler.setLevel(logging.INFO)
+        trading_logger.addHandler(log_handler)
+
+        # Initialize trading engine
+        logger.info("🔧 Initializing trading engine...")
+        if not trading_state.trading_engine.initialize():
+            logger.error("❌ CRITICAL: Failed to initialize trading engine")
+            logger.error("🔍 Check:")
+            logger.error("   1. Market analyzer initialization")
+            logger.error("   2. Risk manager setup")
+            logger.error("   3. API permissions for market data")
+            trading_state.is_trading = False
+            asyncio.run(manager.broadcast({
+                "type": "trading_stopped", 
+                "message": "❌ Trading engine initialization failed - Check logs for details"
+            }))
+            return
+            
+        logger.info("✅ Real trading engine initialized successfully")
+        asyncio.run(manager.broadcast({
+            "type": "trading_started", 
+            "message": "🚀 Real trading engine active - Using LIVE market data"
+        }))
+
+        # Set budget if available
+        if hasattr(trading_state.trading_engine, 'daily_budget'):
+            trading_state.trading_engine.daily_budget = trading_state.daily_budget
+
+        # STEP 4: Main Trading Loop
+        analysis_count = 0
+        last_status_time = time.time()
+        consecutive_errors = 0
+        max_consecutive_errors = 5
+
+        while trading_state.is_trading:
+            current_time = time.time()
+            
+            # Check if market is open
+            if not trading_state.is_market_open():
+                logger.info("Market closed during trading session - stopping")
+                trading_state.is_trading = False
                 asyncio.run(manager.broadcast({
-                    "type": "trading_status",
-                    "message": "👀 Monitoring existing positions and risk levels..."
+                    "type": "market_closed_stop", 
+                    "message": "Trading stopped - Market closed"
                 }))
-                
-                # Check positions
-                try:
-                    trading_state.trading_engine._monitor_positions()
-                except Exception as e:
-                    logger.error(f"Error in position monitoring: {e}")
-                    asyncio.run(manager.broadcast({
-                        "type": "trading_status",
-                        "message": f"⚠️ Position monitoring error: {str(e)[:100]}... Continuing..."
-                    }))
-                
-                # Risk check
-                try:
-                    trading_state.trading_engine._risk_check()
-                except Exception as e:
-                    logger.error(f"Error in risk check: {e}")
-                    asyncio.run(manager.broadcast({
-                        "type": "trading_status",
-                        "message": f"⚠️ Risk check error: {str(e)[:100]}... Continuing..."
-                    }))
-                
-                # Broadcast waiting message
+                break
+
+            # Status updates
+            if current_time - last_status_time >= 30:
+                analysis_count += 1
+                market_status = "Open" if trading_state.is_market_open() else "Closed"
                 asyncio.run(manager.broadcast({
-                    "type": "trading_status",
-                    "message": "⏳ Waiting for next analysis cycle (60 seconds)..."
+                    "type": "trading_status", 
+                    "message": f"🔍 Analysis #{analysis_count} - Market: {market_status} - Scanning for opportunities..."
                 }))
-                
-                # Sleep between iterations with progress updates
-                for i in range(60):  # 60 seconds total
-                    if not trading_state.is_trading:
-                        break
-                    time.sleep(1)
-                    
-                    # Update countdown every 15 seconds
-                    if i % 15 == 0 and i > 0:
-                        remaining = 60 - i
-                        asyncio.run(manager.broadcast({
-                            "type": "trading_status",
-                            "message": f"⏳ Next analysis in {remaining} seconds..."
-                        }))
+                last_status_time = current_time
+
+            # Get trading engine status
+            try:
+                status = trading_state.trading_engine.get_status()
+                if status:
+                    risk_summary = status.get('risk_summary', {})
+                    trading_state.daily_pnl = risk_summary.get('daily_pnl', 0)
+                    trading_state.budget_used = risk_summary.get('budget_used', 0)
+                    asyncio.run(manager.broadcast({
+                        "type": "status_update",
+                        "data": {
+                            "daily_pnl": trading_state.daily_pnl,
+                            "budget_used": trading_state.budget_used,
+                            "trades_count": len(trading_state.trades),
+                            "positions_count": status.get('monitoring_positions', 0),
+                            "active_orders": status.get('active_orders', 0)
+                        }
+                    }))
+            except Exception as e:
+                logger.warning(f"Could not get trading engine status: {e}")
+
+            # Execute market analysis and trading
+            asyncio.run(manager.broadcast({
+                "type": "trading_status", 
+                "message": "📊 Analyzing market with REAL data from Zerodha API..."
+            }))
+            
+            try:
+                trading_state.trading_engine._analyze_and_trade()
+                consecutive_errors = 0  # Reset error counter on success
                 
             except Exception as e:
-                logger.error(f"Error in real trading loop: {e}")
+                consecutive_errors += 1
+                error_msg = str(e)[:100]
+                logger.error(f"Error in market analysis (#{consecutive_errors}): {e}")
+                
                 asyncio.run(manager.broadcast({
-                    "type": "trading_status",
-                    "message": f"❌ Trading loop error: {str(e)[:100]}... Retrying in 30 seconds..."
+                    "type": "trading_status", 
+                    "message": f"⚠️ Analysis error #{consecutive_errors}: {error_msg}..."
                 }))
-                time.sleep(30)
-        
-        logger.info("🛑 Real trading engine stopped")
-        
-        # Final status message
-        asyncio.run(manager.broadcast({
-            "type": "trading_stopped",
-            "message": "🛑 Real trading engine has been stopped"
-        }))
-        
+                
+                if consecutive_errors >= max_consecutive_errors:
+                    logger.error(f"❌ CRITICAL: {consecutive_errors} consecutive errors - stopping trading")
+                    logger.error("🔍 This indicates a serious issue with:")
+                    logger.error("   1. API connectivity")
+                    logger.error("   2. Market data access")
+                    logger.error("   3. System configuration")
+                    
+                    trading_state.is_trading = False
+                    asyncio.run(manager.broadcast({
+                        "type": "trading_stopped", 
+                        "message": f"❌ Too many errors ({consecutive_errors}) - Trading stopped for safety"
+                    }))
+                    break
+
+            # Position monitoring
+            asyncio.run(manager.broadcast({
+                "type": "trading_status", 
+                "message": "👀 Monitoring existing positions and risk levels..."
+            }))
+            
+            try:
+                trading_state.trading_engine._monitor_positions()
+            except Exception as e:
+                logger.error(f"Error in position monitoring: {e}")
+                asyncio.run(manager.broadcast({
+                    "type": "trading_status", 
+                    "message": f"⚠️ Position monitoring error: {str(e)[:100]}... Continuing..."
+                }))
+
+            # Risk checking
+            try:
+                trading_state.trading_engine._risk_check()
+            except Exception as e:
+                logger.error(f"Error in risk check: {e}")
+                asyncio.run(manager.broadcast({
+                    "type": "trading_status", 
+                    "message": f"⚠️ Risk check error: {str(e)[:100]}... Continuing..."
+                }))
+
+            # Wait for next cycle
+            asyncio.run(manager.broadcast({
+                "type": "trading_status", 
+                "message": "⏳ Waiting for next analysis cycle (60 seconds)..."
+            }))
+            
+            for i in range(60):
+                if not trading_state.is_trading:
+                    break
+                time.sleep(1)
+                if i % 15 == 0 and i > 0:
+                    remaining = 60 - i
+                    asyncio.run(manager.broadcast({
+                        "type": "trading_status", 
+                        "message": f"⏳ Next analysis in {remaining} seconds..."
+                    }))
+
     except Exception as e:
-        logger.error(f"Real trading error: {e}")
+        logger.error(f"❌ CRITICAL ERROR in real trading: {e}")
+        logger.error("🔍 DEBUG: Check:")
+        logger.error("   1. System resources and memory")
+        logger.error("   2. Network connectivity")
+        logger.error("   3. Zerodha API service status")
+        
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        
         trading_state.is_trading = False
         asyncio.run(manager.broadcast({
-            "type": "trading_stopped",
-            "message": f"❌ Real trading error: {str(e)}"
+            "type": "trading_stopped", 
+            "message": f"❌ Critical system error: {str(e)[:100]} - Check logs"
         }))
 
 # Background trading simulation
@@ -1348,10 +1332,6 @@ def create_web_files():
                                 
                                 <button class="btn btn-warning" onclick="squareOffAll()">
                                     <i class="fas fa-times-circle"></i> Emergency Square Off
-                                </button>
-                                
-                                <button class="btn btn-info" onclick="generateDemoTrades()">
-                                    <i class="fas fa-vial"></i> Generate Demo Trades
                                 </button>
                             </div>
                         {% endif %}
@@ -2052,26 +2032,7 @@ async function toggleTradingMode() {
     }
 }
 
-async function generateDemoTrades() {
-    try {
-        updateLiveStatus('🎯 Generating demo trades for testing...', 'info');
-        
-        const response = await fetch('/api/generate_demo_trades', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'}
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            updateLiveStatus(result.message, 'success');
-        } else {
-            updateLiveStatus('Failed to generate demo trades: ' + result.message, 'danger');
-        }
-    } catch (error) {
-        updateLiveStatus('Error generating demo trades: ' + error.message, 'danger');
-    }
-}
+
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {

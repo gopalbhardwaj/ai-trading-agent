@@ -189,7 +189,7 @@ class TradingEngine:
             return False
     
     def _analyze_and_trade(self):
-        """Analyze market and execute trades"""
+        """Execute a trade based on signal"""
         try:
             if self.stop_trading:
                 logger.info("⏹️ Trading stopped flag detected - skipping analysis")
@@ -197,14 +197,26 @@ class TradingEngine:
                 
             logger.info("🔍 Starting market analysis for trading opportunities...")
             
-            # Get market sentiment
+            # Validate API connection first
+            if not self.market_analyzer.api_authenticated:
+                logger.error("❌ CRITICAL: Market analyzer not authenticated")
+                logger.error("🔍 Cannot proceed with trading - fix authentication first")
+                self.stop_trading = True
+                return
+            
+            # Check market analyzer has instruments
+            if not self.market_analyzer.instruments_cache:
+                logger.error("❌ CRITICAL: No instruments loaded in market analyzer")
+                logger.error("🔍 Cannot proceed with trading - fix instrument loading first")
+                self.stop_trading = True
+                return
+            
+            # Market sentiment analysis
             try:
                 logger.info("📈 Analyzing market sentiment...")
                 market_sentiment = self.market_analyzer.get_market_sentiment()
-                logger.info(f"📊 Market Sentiment: {market_sentiment['sentiment']} "
-                           f"(Strength: {market_sentiment['strength']:.2f})")
+                logger.info(f"📊 Market Sentiment: {market_sentiment['sentiment']} (Strength: {market_sentiment['strength']:.2f})")
                 
-                # Skip trading in highly bearish market
                 if market_sentiment['sentiment'] == 'BEARISH' and market_sentiment['strength'] < 0.3:
                     logger.info("🐻 Bearish market detected. Skipping new trades for safety.")
                     return
@@ -217,79 +229,37 @@ class TradingEngine:
                 logger.error(f"❌ Failed to analyze market sentiment: {e}")
                 logger.info("🔄 Continuing with stock screening despite sentiment analysis failure...")
             
-            # Screen stocks for opportunities
-            try:
-                logger.info("🔍 Screening stocks for trading opportunities...")
-                signals = self.market_analyzer.screen_stocks()
-                
-                if not signals:
-                    logger.info("📊 No trading opportunities found in current market scan")
-                    logger.info("⏳ Will continue monitoring for better setups...")
-                    return
-                else:
-                    logger.info(f"✨ Found {len(signals)} potential trading opportunities!")
-                    
-                    # Log details about top signals
-                    for i, signal in enumerate(signals[:3]):
-                        logger.info(f"🎯 Signal #{i+1}: {signal.get('symbol', 'Unknown')} - "
-                                   f"{signal.get('signal', 'Unknown')} (Strength: {signal.get('strength', 0):.2f})")
-                
-            except Exception as e:
-                logger.error(f"❌ Failed to screen stocks: {e}")
-                logger.info("🔄 Attempting fallback stock analysis with real market data...")
-                
-                # Fallback: Analyze major stocks with real market data
-                try:
-                    fallback_stocks = Config.FALLBACK_STOCKS[:3]  # Limit to 3 for safety
-                    logger.info(f"📊 Fallback: Analyzing {len(fallback_stocks)} major stocks with REAL market data...")
-                    
-                    signals = []
-                    for stock in fallback_stocks:
-                        try:
-                            # Get REAL current price from Zerodha
-                            current_price = self.market_analyzer.get_real_time_price(stock)
-                            if not current_price:
-                                logger.warning(f"⚠️ Could not get real price for {stock}, skipping...")
-                                continue
-                            
-                            logger.info(f"💰 Real-time price for {stock}: ₹{current_price}")
-                            
-                            # Generate signals using real market data
-                            signal_data = self.market_analyzer.generate_signals(stock)
-                            
-                            if signal_data['signal'] in ['BUY', 'SELL'] and signal_data['strength'] > 0.3:
-                                signal_data['symbol'] = stock
-                                signals.append(signal_data)
-                                logger.info(f"📈 Fallback signal: {stock} - {signal_data['signal']} "
-                                          f"(Strength: {signal_data['strength']:.2f}, Real Price: ₹{current_price})")
-                            else:
-                                logger.info(f"📊 {stock}: No strong signal (Strength: {signal_data['strength']:.2f})")
-                        
-                        except Exception as stock_error:
-                            logger.error(f"❌ Failed to analyze {stock}: {stock_error}")
-                            continue
-                    
-                    if signals:
-                        logger.info(f"✅ Fallback analysis generated {len(signals)} REAL trading signals")
-                        logger.info("🚀 Using REAL market data and prices - NOT simulation!")
-                    else:
-                        logger.info("📊 No strong signals found in fallback analysis - will retry in next cycle")
-                        return
-                        
-                except Exception as fallback_error:
-                    logger.error(f"❌ Fallback stock analysis also failed: {fallback_error}")
-                    logger.info("⏳ Will retry complete analysis in next cycle...")
-                    return
+            # Screen stocks for opportunities - REAL DATA ONLY
+            logger.info("🔍 Screening stocks for trading opportunities using REAL market data...")
+            signals = self.market_analyzer.screen_stocks()
             
-            # Process top signals
+            if not signals:
+                logger.warning("📊 No trading opportunities found in current market scan")
+                logger.warning("🔍 Possible reasons:")
+                logger.warning("   1. Market conditions are not favorable for trading")
+                logger.warning("   2. All analyzed stocks are in HOLD range")
+                logger.warning("   3. Signal strength threshold not met")
+                logger.warning("   4. Technical indicators show neutral signals")
+                logger.info("⏳ Will continue monitoring for better setups in next cycle...")
+                return
+            else:
+                logger.info(f"✨ Found {len(signals)} potential trading opportunities!")
+                
+                # Log details about top signals
+                for i, signal in enumerate(signals[:3]):
+                    logger.info(f"🎯 Signal #{i+1}: {signal.get('symbol', 'Unknown')} - "
+                               f"{signal.get('signal', 'Unknown')} (Strength: {signal.get('strength', 0):.2f}, "
+                               f"Price: ₹{signal.get('price', 0)})")
+            
+            # Execute trades on real signals
             trades_attempted = 0
             trades_successful = 0
             
-            for i, signal in enumerate(signals[:3]):  # Top 3 signals
+            for i, signal in enumerate(signals[:3]):  # Limit to top 3 signals
                 if self.stop_trading:
                     logger.info("⏹️ Trading stopped during signal processing")
                     break
-                
+                    
                 trades_attempted += 1
                 symbol = signal.get('symbol', 'Unknown')
                 logger.info(f"🎯 Processing signal #{i+1}/{min(3, len(signals))}: {symbol}")
@@ -298,19 +268,23 @@ class TradingEngine:
                 if success:
                     trades_successful += 1
                     logger.info(f"✅ Trade executed successfully for {symbol}")
-                    time.sleep(10)  # Wait between trades
+                    time.sleep(10)  # Brief pause between trades
                 else:
-                    logger.info(f"❌ Trade execution failed for {symbol}")
+                    logger.warning(f"❌ Trade execution failed for {symbol}")
             
-            # Summary of this analysis cycle
             if trades_attempted > 0:
                 logger.info(f"📈 Analysis cycle complete: {trades_successful}/{trades_attempted} trades successful")
             else:
-                logger.info("📊 Analysis cycle complete: No suitable opportunities found")
-                logger.info("🔄 Continuing to monitor markets for better setups...")
-                    
+                logger.info("📊 Analysis cycle complete: No trades attempted")
+                
         except Exception as e:
-            logger.error(f"❌ Error in market analysis: {e}")
+            logger.error(f"❌ Critical error in market analysis: {e}")
+            logger.error("🔍 DEBUG: Check:")
+            logger.error("   1. Zerodha API connectivity")
+            logger.error("   2. Market data availability")
+            logger.error("   3. System resources and memory")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             logger.info("🔄 Will retry analysis in next cycle...")
     
     def _execute_trade(self, signal_data: Dict) -> bool:

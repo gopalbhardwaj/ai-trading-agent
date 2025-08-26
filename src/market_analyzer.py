@@ -15,14 +15,63 @@ class MarketAnalyzer:
     def __init__(self, zerodha_client):
         self.zerodha_client = zerodha_client
         self.instruments_cache = {}
+        self.api_authenticated = False
         
-        # Initialize instruments on creation
-        logger.info("🔧 Initializing MarketAnalyzer with real Zerodha data...")
-        self._load_instruments()
+        # Initialize and validate connection
+        logger.info("🔧 Initializing MarketAnalyzer with Zerodha API...")
+        self._validate_api_connection()
+        if self.api_authenticated:
+            self._load_instruments()
+        else:
+            logger.error("❌ Cannot initialize MarketAnalyzer - API authentication failed")
+    
+    def _validate_api_connection(self):
+        """Validate that we can communicate with Zerodha API"""
+        try:
+            logger.info("🔐 Validating Zerodha API connection...")
+            
+            # Check if zerodha client has authentication
+            if not hasattr(self.zerodha_client, 'kite') and not hasattr(self.zerodha_client, 'kite_client'):
+                logger.error("❌ Zerodha client not properly initialized - missing kite connection")
+                return False
+            
+            # Try to get profile to test authentication
+            try:
+                if hasattr(self.zerodha_client, 'kite'):
+                    profile = self.zerodha_client.kite.profile()
+                elif hasattr(self.zerodha_client, 'kite_client'):
+                    profile = self.zerodha_client.kite_client.profile()
+                else:
+                    profile = self.zerodha_client.get_profile()
+                
+                if profile and 'user_name' in profile:
+                    logger.info(f"✅ API Authentication successful - User: {profile['user_name']}")
+                    self.api_authenticated = True
+                    return True
+                else:
+                    logger.error("❌ API Authentication failed - Invalid profile response")
+                    return False
+                    
+            except Exception as auth_error:
+                logger.error(f"❌ API Authentication failed: {auth_error}")
+                logger.error("🔍 DEBUG: Check if:")
+                logger.error("   1. Zerodha API keys are correct")
+                logger.error("   2. Access token is valid and not expired")
+                logger.error("   3. Account has API access permissions")
+                logger.error("   4. Network connection is working")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Critical error during API validation: {e}")
+            return False
     
     def _load_instruments(self):
         """Load and cache instrument data from all configured exchanges"""
         try:
+            if not self.api_authenticated:
+                logger.error("❌ Cannot load instruments - API not authenticated")
+                return
+            
             all_instruments = []
             
             # Load instruments from all exchanges
@@ -30,51 +79,72 @@ class MarketAnalyzer:
                 try:
                     logger.info(f"📊 Loading instruments from {exchange}...")
                     instruments = self.zerodha_client.get_instruments(exchange)
+                    
+                    if not instruments:
+                        logger.warning(f"⚠️ No instruments received from {exchange}")
+                        logger.warning("🔍 DEBUG: This could mean:")
+                        logger.warning(f"   1. API key doesn't have access to {exchange}")
+                        logger.warning(f"   2. Network issue connecting to {exchange}")
+                        logger.warning(f"   3. Exchange is closed or unavailable")
+                        continue
+                    
                     logger.info(f"✅ Loaded {len(instruments)} instruments from {exchange}")
                     all_instruments.extend(instruments)
+                    
                 except Exception as e:
-                    logger.error(f"Failed to load instruments from {exchange}: {e}")
+                    logger.error(f"❌ Failed to load instruments from {exchange}: {e}")
+                    logger.error("🔍 DEBUG: Check if:")
+                    logger.error(f"   1. API has permission to access {exchange}")
+                    logger.error(f"   2. Exchange code '{exchange}' is correct")
+                    logger.error("   3. Network connectivity is stable")
             
             if not all_instruments:
-                logger.warning("⚠️ No instruments loaded from exchanges, using fallback stocks")
-                # Use fallback but still try to get their instrument tokens
-                for symbol in Config.FALLBACK_STOCKS:
-                    self.instruments_cache[symbol] = {
-                        'tradingsymbol': symbol, 
-                        'exchange': 'NSE',
-                        'instrument_token': symbol  # Will be resolved later
-                    }
+                logger.error("❌ CRITICAL: No instruments loaded from any exchange!")
+                logger.error("🔍 DEBUGGING STEPS:")
+                logger.error("   1. Check API authentication status")
+                logger.error("   2. Verify API key has data permissions")
+                logger.error("   3. Check if exchanges NSE/BSE are accessible")
+                logger.error("   4. Try manual API call in browser/Postman")
+                logger.error("   5. Contact Zerodha support if API is not working")
                 return
             
             # Apply filtering criteria
             filtered_instruments = self._filter_instruments(all_instruments)
+            
+            if not filtered_instruments:
+                logger.error("❌ No instruments passed filtering criteria!")
+                logger.error("🔍 DEBUG: All instruments were filtered out, check:")
+                logger.error("   1. Filtering criteria in config.py")
+                logger.error("   2. Instrument data format from API")
+                return
             
             # Cache filtered instruments
             for instrument in filtered_instruments:
                 symbol = instrument['tradingsymbol']
                 self.instruments_cache[symbol] = instrument
             
-            logger.info(f"✅ Filtered and loaded {len(self.instruments_cache)} tradeable instruments")
+            logger.info(f"✅ Successfully loaded {len(self.instruments_cache)} tradeable instruments")
             
-            # Log some examples
+            # Log some examples for verification
             if self.instruments_cache:
                 examples = list(self.instruments_cache.keys())[:5]
                 logger.info(f"📈 Example instruments: {', '.join(examples)}")
             
         except Exception as e:
-            logger.error(f"Failed to load instruments: {e}")
-            # Fallback to default stocks
-            logger.info("📋 Using fallback stock list due to error")
-            for symbol in Config.FALLBACK_STOCKS:
-                self.instruments_cache[symbol] = {
-                    'tradingsymbol': symbol, 
-                    'exchange': 'NSE',
-                    'instrument_token': symbol
-                }
+            logger.error(f"❌ Critical error loading instruments: {e}")
+            logger.error("🔍 DEBUG: This is a serious issue - check:")
+            logger.error("   1. Zerodha API service status")
+            logger.error("   2. Network connectivity")
+            logger.error("   3. API rate limits")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
     
     def _filter_instruments(self, instruments: List[Dict]) -> List[Dict]:
         """Apply filtering criteria to instruments"""
         filtered = []
+        total_count = len(instruments)
+        
+        logger.info(f"🔍 Filtering {total_count} instruments...")
         
         for instrument in instruments:
             if self._is_eligible_instrument(instrument):
@@ -84,7 +154,12 @@ class MarketAnalyzer:
                 if len(filtered) >= Config.MAX_STOCKS_TO_ANALYZE:
                     break
         
-        logger.info(f"📊 Filtered {len(filtered)} eligible instruments from {len(instruments)} total")
+        filter_percentage = (len(filtered) / total_count * 100) if total_count > 0 else 0
+        logger.info(f"📊 Filtered {len(filtered)} eligible instruments from {total_count} total ({filter_percentage:.1f}%)")
+        
+        if len(filtered) == 0:
+            logger.warning("⚠️ Zero instruments passed filtering - criteria may be too strict")
+        
         return filtered
     
     def _is_eligible_instrument(self, instrument: Dict) -> bool:
@@ -119,48 +194,84 @@ class MarketAnalyzer:
             return False
     
     def get_real_time_price(self, symbol: str) -> Optional[float]:
-        """Get real-time price from Zerodha API"""
+        """Get real-time price from Zerodha API with comprehensive error handling"""
         try:
-            # Try to get instrument token
+            if not self.api_authenticated:
+                logger.error(f"❌ Cannot get price for {symbol} - API not authenticated")
+                return None
+            
+            # Check if instrument exists in cache
             instrument_info = self.instruments_cache.get(symbol)
             if not instrument_info:
-                logger.warning(f"Instrument not found in cache: {symbol}")
+                logger.error(f"❌ Instrument {symbol} not found in cache")
+                logger.error("🔍 DEBUG: This could mean:")
+                logger.error(f"   1. Symbol '{symbol}' is not available on NSE/BSE")
+                logger.error(f"   2. Symbol was filtered out during instrument loading")
+                logger.error(f"   3. Instrument cache failed to load properly")
                 return None
             
             # Get quote using Zerodha API
             exchange = instrument_info.get('exchange', 'NSE')
             instrument_key = f"{exchange}:{symbol}"
             
+            logger.debug(f"📊 Fetching real-time price for {instrument_key}...")
             quotes = self.zerodha_client.get_quote([instrument_key])
             
-            if quotes and instrument_key in quotes:
-                quote_data = quotes[instrument_key]
-                ltp = quote_data.get('last_price', 0)
-                logger.debug(f"📊 Real-time price for {symbol}: ₹{ltp}")
-                return float(ltp) if ltp else None
-            else:
-                logger.warning(f"No quote data for {symbol}")
+            if not quotes:
+                logger.error(f"❌ No quote data received for {symbol}")
+                logger.error("🔍 DEBUG: API returned empty quotes - check:")
+                logger.error("   1. Market is open")
+                logger.error("   2. Symbol is actively traded")
+                logger.error("   3. API has quote permissions")
                 return None
+            
+            if instrument_key not in quotes:
+                logger.error(f"❌ Quote not found for {instrument_key}")
+                logger.error(f"🔍 Available quotes: {list(quotes.keys())}")
+                return None
+            
+            quote_data = quotes[instrument_key]
+            ltp = quote_data.get('last_price', 0)
+            
+            if not ltp or ltp <= 0:
+                logger.error(f"❌ Invalid price for {symbol}: {ltp}")
+                logger.error("🔍 DEBUG: Check if:")
+                logger.error("   1. Stock is halted or suspended")
+                logger.error("   2. Market is open")
+                logger.error("   3. Quote data is valid")
+                return None
+            
+            logger.debug(f"✅ Real-time price for {symbol}: ₹{ltp}")
+            return float(ltp)
                 
         except Exception as e:
-            logger.error(f"Failed to get real-time price for {symbol}: {e}")
+            logger.error(f"❌ Failed to get real-time price for {symbol}: {e}")
+            logger.error("🔍 DEBUG: Check:")
+            logger.error("   1. Network connectivity")
+            logger.error("   2. API rate limits")
+            logger.error("   3. Zerodha API service status")
             return None
     
     def get_stock_data(self, symbol: str, period: str = "5d", interval: str = "5m") -> Optional[pd.DataFrame]:
         """
-        Get stock data from Zerodha historical data API
+        Get stock data from Zerodha historical data API with comprehensive error handling
         """
         try:
+            if not self.api_authenticated:
+                logger.error(f"❌ Cannot get historical data for {symbol} - API not authenticated")
+                return None
+            
             # Get instrument info
             instrument_info = self.instruments_cache.get(symbol)
             if not instrument_info:
-                logger.warning(f"Instrument not found: {symbol}")
+                logger.error(f"❌ Instrument {symbol} not found for historical data")
                 return None
             
             # Get instrument token
             instrument_token = instrument_info.get('instrument_token')
             if not instrument_token:
-                logger.warning(f"No instrument token for {symbol}")
+                logger.error(f"❌ No instrument token for {symbol}")
+                logger.error("🔍 DEBUG: Instrument data may be corrupted")
                 return None
             
             # Calculate date range
@@ -179,7 +290,7 @@ class MarketAnalyzer:
             start_date = end_date - timedelta(days=days)
             
             # Get historical data from Zerodha
-            logger.debug(f"📊 Fetching {days}d historical data for {symbol}...")
+            logger.debug(f"📊 Fetching {days}d historical data for {symbol} (token: {instrument_token})...")
             historical_data = self.zerodha_client.get_historical_data(
                 instrument_token=instrument_token,
                 from_date=start_date,
@@ -188,14 +299,19 @@ class MarketAnalyzer:
             )
             
             if not historical_data:
-                logger.warning(f"No historical data for {symbol}")
+                logger.error(f"❌ No historical data received for {symbol}")
+                logger.error("🔍 DEBUG: Check if:")
+                logger.error("   1. Market was open during requested period")
+                logger.error("   2. Symbol has trading history")
+                logger.error("   3. API has historical data permissions")
+                logger.error("   4. Date range is valid")
                 return None
             
             # Convert to DataFrame
             df = pd.DataFrame(historical_data)
             
             if df.empty:
-                logger.warning(f"Empty historical data for {symbol}")
+                logger.error(f"❌ Empty historical data for {symbol}")
                 return None
             
             # Standardize column names
@@ -203,16 +319,23 @@ class MarketAnalyzer:
             
             # Ensure we have the required columns
             required_cols = ['open', 'high', 'low', 'close', 'volume']
-            for col in required_cols:
-                if col not in df.columns:
-                    logger.warning(f"Missing column {col} for {symbol}")
-                    return None
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                logger.error(f"❌ Missing required columns for {symbol}: {missing_cols}")
+                logger.error(f"🔍 Available columns: {list(df.columns)}")
+                return None
             
             logger.debug(f"✅ Got {len(df)} candles for {symbol}")
             return df
             
         except Exception as e:
-            logger.error(f"Failed to get historical data for {symbol}: {e}")
+            logger.error(f"❌ Failed to get historical data for {symbol}: {e}")
+            logger.error("🔍 DEBUG: Check:")
+            logger.error("   1. Network connectivity")
+            logger.error("   2. API rate limits")
+            logger.error("   3. Zerodha historical data service status")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             return None
     
     def calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -380,46 +503,96 @@ class MarketAnalyzer:
     
     def screen_stocks(self) -> List[Dict[str, any]]:
         """
-        Screen all stocks in universe for trading opportunities
+        Screen all stocks in universe for trading opportunities - REAL DATA ONLY
         Returns list of stocks with signals sorted by strength
         """
+        if not self.api_authenticated:
+            logger.error("❌ Cannot screen stocks - API not authenticated")
+            logger.error("🔍 CRITICAL: Fix authentication before attempting to trade")
+            return []
+        
+        if not self.instruments_cache:
+            logger.error("❌ Cannot screen stocks - No instruments loaded")
+            logger.error("🔍 CRITICAL: Fix instrument loading before attempting to trade")
+            return []
+        
         signals = []
         
-        logger.info("🔍 Starting comprehensive stock screening...")
+        logger.info("🔍 Starting comprehensive stock screening with REAL market data...")
         logger.info(f"📊 Analyzing {len(self.instruments_cache)} stocks from NSE/BSE")
         
-        # Step 1: Pre-screening for performance
-        promising_stocks = self._pre_screen_stocks()
-        logger.info(f"🎯 Pre-screening identified {len(promising_stocks)} promising stocks")
-        
-        # Step 2: Detailed analysis of promising stocks
-        analyzed_count = 0
-        for symbol in promising_stocks:
-            try:
-                signal_data = self.generate_signals(symbol)
-                if signal_data['signal'] != 'HOLD' and signal_data['strength'] > 0.4:
-                    signal_data['symbol'] = symbol
-                    signals.append(signal_data)
+        # Screen stocks without fallback - REAL DATA ONLY
+        try:
+            # Step 1: Pre-screening for performance
+            promising_stocks = self._pre_screen_stocks()
+            
+            if not promising_stocks:
+                logger.error("❌ Pre-screening returned no stocks")
+                logger.error("🔍 DEBUG: Check if:")
+                logger.error("   1. Market is open")
+                logger.error("   2. Stocks have recent trading activity")
+                logger.error("   3. Pre-screening criteria are too strict")
+                return []
+            
+            logger.info(f"🎯 Pre-screening identified {len(promising_stocks)} promising stocks")
+            
+            # Step 2: Detailed analysis of promising stocks
+            analyzed_count = 0
+            failed_count = 0
+            
+            for symbol in promising_stocks:
+                try:
+                    logger.debug(f"🔍 Analyzing {symbol}...")
+                    signal_data = self.generate_signals(symbol)
                     
-                    logger.info(f"📈 {symbol}: {signal_data['signal']} "
-                              f"(Strength: {signal_data['strength']:.2f}) - "
-                              f"{', '.join(signal_data['reasons'][:2])}")
-                
-                analyzed_count += 1
-                
-                # Progress logging
-                if analyzed_count % 50 == 0:
-                    logger.info(f"📊 Analyzed {analyzed_count}/{len(promising_stocks)} stocks...")
-                
-            except Exception as e:
-                logger.error(f"Failed to analyze {symbol}: {e}")
-                continue
-        
-        # Sort by signal strength
-        signals.sort(key=lambda x: x['strength'], reverse=True)
-        
-        logger.info(f"✅ Found {len(signals)} trading opportunities from {analyzed_count} analyzed stocks")
-        return signals[:Config.TOP_PERFORMERS_COUNT]  # Return top performers
+                    if signal_data['signal'] != 'HOLD' and signal_data['strength'] > 0.4:
+                        signal_data['symbol'] = symbol
+                        signals.append(signal_data)
+                        
+                        logger.info(f"📈 {symbol}: {signal_data['signal']} "
+                                  f"(Strength: {signal_data['strength']:.2f}, Price: ₹{signal_data.get('price', 0)}) - "
+                                  f"{', '.join(signal_data.get('reasons', [])[:2])}")
+                    else:
+                        logger.debug(f"📊 {symbol}: {signal_data['signal']} (Strength: {signal_data['strength']:.2f}) - Not strong enough")
+                    
+                    analyzed_count += 1
+                    
+                    # Progress logging
+                    if analyzed_count % 20 == 0:
+                        logger.info(f"📊 Analyzed {analyzed_count}/{len(promising_stocks)} stocks... Found {len(signals)} signals so far")
+                    
+                except Exception as e:
+                    failed_count += 1
+                    logger.warning(f"⚠️ Failed to analyze {symbol}: {e}")
+                    continue
+            
+            # Sort by signal strength
+            signals.sort(key=lambda x: x['strength'], reverse=True)
+            
+            logger.info(f"✅ Stock screening complete:")
+            logger.info(f"   📊 Analyzed: {analyzed_count} stocks")
+            logger.info(f"   ❌ Failed: {failed_count} stocks")
+            logger.info(f"   📈 Found: {len(signals)} trading opportunities")
+            
+            if not signals:
+                logger.warning("⚠️ No trading opportunities found in current market scan")
+                logger.warning("🔍 This could mean:")
+                logger.warning("   1. Market conditions are not favorable")
+                logger.warning("   2. All stocks are in HOLD range")
+                logger.warning("   3. Signal strength threshold (0.4) is too high")
+                logger.warning("   4. Technical indicators show neutral signals")
+            
+            return signals[:Config.TOP_PERFORMERS_COUNT]  # Return top performers
+            
+        except Exception as e:
+            logger.error(f"❌ Critical error during stock screening: {e}")
+            logger.error("🔍 DEBUG: This is a serious issue - check:")
+            logger.error("   1. API connectivity")
+            logger.error("   2. Market data availability")
+            logger.error("   3. System resources")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            return []
     
     def _pre_screen_stocks(self) -> List[str]:
         """
