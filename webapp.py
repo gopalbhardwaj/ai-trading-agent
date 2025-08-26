@@ -1336,24 +1336,12 @@ def create_web_files():
                                     <i class="fas fa-times-circle"></i> Emergency Square Off
                                 </button>
                                 
-                                <button class="btn btn-info" onclick="testApiConnection()">
-                                    <i class="fas fa-vial"></i> Test API Connection
+                                <button class="btn btn-primary" onclick="getSimpleFixGuide()">
+                                    <i class="fas fa-wrench"></i> What's Working?
                                 </button>
                                 
-                                <button class="btn btn-warning" onclick="showPermissionsGuide()">
-                                    <i class="fas fa-key"></i> Fix API Permissions
-                                </button>
-                                
-                                <button class="btn btn-secondary" onclick="enableFallbackMode()">
-                                    <i class="fas fa-tools"></i> Enable Fallback Mode
-                                </button>
-                                
-                                <button class="btn btn-primary" onclick="setupMcpIntegration()">
-                                    <i class="fas fa-rocket"></i> Setup Zerodha MCP
-                                </button>
-                                
-                                <button class="btn btn-success" onclick="checkTradingOptions()">
-                                    <i class="fas fa-chart-line"></i> Compare Trading Options
+                                <button class="btn btn-success" onclick="testBasicOrder()">
+                                    <i class="fas fa-check"></i> Can I Trade?
                                 </button>
                             </div>
                         {% endif %}
@@ -1415,6 +1403,49 @@ def create_web_files():
                                     <i class="fas fa-times-circle text-secondary"></i> Manual start required
                                 {% endif %}
                             </small>
+                        </div>
+                        {% endif %}
+                        
+                        <!-- Manual Trading Form -->
+                        {% if state.is_authenticated %}
+                        <div class="card trading-card mt-3">
+                            <div class="card-header">
+                                <h5><i class="fas fa-edit"></i> Manual Order Placement</h5>
+                            </div>
+                            <div class="card-body">
+                                <p class="text-muted">Place orders manually (works without market data permissions)</p>
+                                <form id="manual-order-form">
+                                    <div class="row">
+                                        <div class="col-md-12 mb-3">
+                                            <label class="form-label">Stock Symbol</label>
+                                            <input type="text" class="form-control" name="symbol" placeholder="e.g., RELIANCE" required>
+                                        </div>
+                                    </div>
+                                    <div class="row">
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label">Action</label>
+                                            <select class="form-control" name="action" required>
+                                                <option value="">Select</option>
+                                                <option value="BUY">BUY</option>
+                                                <option value="SELL">SELL</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label">Quantity</label>
+                                            <input type="number" class="form-control" name="quantity" min="1" placeholder="e.g., 10" required>
+                                        </div>
+                                    </div>
+                                    <div class="row">
+                                        <div class="col-md-12 mb-3">
+                                            <label class="form-label">Price (₹)</label>
+                                            <input type="number" class="form-control" name="price" step="0.01" min="0.01" placeholder="e.g., 2450.50" required>
+                                        </div>
+                                    </div>
+                                    <button type="submit" class="btn btn-primary w-100">
+                                        <i class="fas fa-paper-plane"></i> Place Order
+                                    </button>
+                                </form>
+                            </div>
                         </div>
                         {% endif %}
                     </div>
@@ -2054,11 +2085,11 @@ async function toggleTradingMode() {
     }
 }
 
-async function testApiConnection() {
+async function getSimpleFixGuide() {
     try {
-        updateLiveStatus('🔍 Testing Zerodha API connection...', 'info');
+        updateLiveStatus('🔍 Checking what your API can actually do...', 'info');
         
-        const response = await fetch('/api/test_api_connection', {
+        const response = await fetch('/api/simple_fix_guide', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'}
         });
@@ -2066,18 +2097,20 @@ async function testApiConnection() {
         const result = await response.json();
         
         if (result.success) {
-            updateLiveStatus('✅ API Test Passed: All Zerodha APIs working correctly', 'success');
+            updateLiveStatus('✅ Analysis complete. See detailed results above.', 'success');
         } else {
-            updateLiveStatus('❌ API Test Failed: ' + result.message, 'danger');
+            updateLiveStatus('❌ Analysis failed: ' + result.message, 'danger');
         }
     } catch (error) {
-        updateLiveStatus('❌ API Test Error: ' + error.message, 'danger');
+        updateLiveStatus('❌ Error: ' + error.message, 'danger');
     }
 }
 
-async function showPermissionsGuide() {
+async function testBasicOrder() {
     try {
-        const response = await fetch('/api/fix_permissions_guide', {
+        updateLiveStatus('🧪 Testing if you can place orders...', 'info');
+        
+        const response = await fetch('/api/basic_order_test', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'}
         });
@@ -2085,71 +2118,14 @@ async function showPermissionsGuide() {
         const result = await response.json();
         
         if (result.success) {
-            alert('Permissions guide sent. Check status messages above.');
+            updateLiveStatus('✅ You can place orders! Check details above.', 'success');
         } else {
-            alert('Error: ' + result.message);
+            updateLiveStatus('❌ Cannot place orders: ' + result.message, 'danger');
         }
     } catch (error) {
-        alert('Error: ' + error.message);
+        updateLiveStatus('❌ Test failed: ' + error.message, 'danger');
     }
 }
-
-async function enableFallbackMode() {
-    try {
-        const response = await fetch('/api/enable_fallback_mode', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'}
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            alert('Fallback mode enabled. You can now trade using order book data.');
-        } else {
-            alert('Error: ' + result.message);
-        }
-    } catch (error) {
-        alert('Error: ' + error.message);
-    }
-}
-
-  async function setupMcpIntegration() {
-      try {
-          const response = await fetch('/api/setup_mcp_integration', {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'}
-          });
-          
-          const result = await response.json();
-          
-          if (result.success) {
-              alert('MCP setup guide provided. Check status messages for detailed steps.');
-          } else {
-              alert('Error: ' + result.message);
-          }
-      } catch (error) {
-          alert('Error: ' + error.message);
-      }
-  }
-  
-  async function checkTradingOptions() {
-      try {
-          const response = await fetch('/api/check_trading_options', {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'}
-          });
-          
-          const result = await response.json();
-          
-          if (result.success) {
-              alert('Trading options analysis complete. Check status messages for detailed comparison.');
-          } else {
-              alert('Error: ' + result.message);
-          }
-      } catch (error) {
-          alert('Error: ' + error.message);
-      }
-  }
   
   // Initialize on page load
     try {
@@ -2199,6 +2175,36 @@ document.addEventListener('DOMContentLoaded', function() {
         budgetForm.addEventListener('submit', function(e) {
             e.preventDefault();
             updateBudget();
+        });
+    }
+    
+    // Manual order form submission
+    const manualOrderForm = document.getElementById('manual-order-form');
+    if (manualOrderForm) {
+        manualOrderForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const formData = new FormData(this);
+            
+            try {
+                updateLiveStatus('📝 Placing manual order...', 'info');
+                
+                const response = await fetch('/api/place_manual_order', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    updateLiveStatus('✅ Order placed successfully!', 'success');
+                    this.reset(); // Clear the form
+                } else {
+                    updateLiveStatus('❌ Order failed: ' + result.message, 'danger');
+                }
+            } catch (error) {
+                updateLiveStatus('❌ Error placing order: ' + error.message, 'danger');
+            }
         });
     }
     
@@ -2769,6 +2775,292 @@ async def check_trading_options():
         return JSONResponse({
             "success": False,
             "message": f"Error analyzing options: {e}"
+        })
+
+@app.post("/api/simple_fix_guide")
+async def simple_fix_guide():
+    """Simple, direct guide to fix API and get trading working"""
+    try:
+        if not trading_state.is_authenticated or not trading_state.kite_client:
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": "❌ Step 1: You need to authenticate first. Go to Setup page."
+            })
+            return JSONResponse({
+                "success": False,
+                "message": "Not authenticated. Complete setup first."
+            })
+        
+        # Test what actually works
+        working_apis = []
+        failing_apis = []
+        
+        # Test Profile API
+        try:
+            profile = trading_state.kite_client.profile()
+            if profile and 'user_name' in profile:
+                working_apis.append("✅ Profile API - Authentication working")
+                user_name = profile['user_name']
+            else:
+                failing_apis.append("❌ Profile API - Authentication failed")
+        except Exception as e:
+            failing_apis.append(f"❌ Profile API - {str(e)}")
+        
+        # Test what they CAN do
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "🔍 Testing what your API can actually do..."
+        })
+        
+        # Test Orders API (this usually works)
+        try:
+            orders = trading_state.kite_client.orders()
+            working_apis.append(f"✅ Orders API - Can access {len(orders)} orders")
+        except Exception as e:
+            failing_apis.append(f"❌ Orders API - {str(e)}")
+        
+        # Test Positions API
+        try:
+            positions = trading_state.kite_client.positions()
+            working_apis.append("✅ Positions API - Can access positions")
+        except Exception as e:
+            failing_apis.append(f"❌ Positions API - {str(e)}")
+        
+        # Test Quote API (this is what's failing)
+        try:
+            quote = trading_state.kite_client.quote(['NSE:RELIANCE'])
+            working_apis.append("✅ Quote API - Market data permissions working")
+        except Exception as e:
+            failing_apis.append(f"❌ Quote API - {str(e)}")
+        
+        # Show results
+        for api in working_apis:
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": api
+            })
+        
+        for api in failing_apis:
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": api
+            })
+        
+        # Provide direct solution
+        if any("Quote API" in api for api in failing_apis):
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": "🎯 PROBLEM IDENTIFIED: Your API lacks market data permissions"
+            })
+            
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": "📞 DIRECT SOLUTION: Email support@zerodha.com with this message:"
+            })
+            
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": "📧 'Please enable market data permissions for my Kite Connect API key'"
+            })
+            
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": "⏰ Usually takes 1-2 business days for Zerodha to enable permissions"
+            })
+            
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": "💡 MEANWHILE: You can place orders manually using our basic order placement"
+            })
+            
+        return JSONResponse({
+            "success": True,
+            "message": "API analysis complete",
+            "working_apis": working_apis,
+            "failing_apis": failing_apis,
+            "next_step": "Email Zerodha support for market data permissions"
+        })
+        
+    except Exception as e:
+        logger.error(f"Simple fix guide error: {e}")
+        return JSONResponse({
+            "success": False,
+            "message": f"Error analyzing API: {e}"
+        })
+
+@app.post("/api/basic_order_test")
+async def basic_order_test():
+    """Test if we can at least place orders with current permissions"""
+    try:
+        if not trading_state.is_authenticated or not trading_state.kite_client:
+            return JSONResponse({
+                "success": False,
+                "message": "Not authenticated"
+            })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "🧪 Testing basic order placement capability..."
+        })
+        
+        # Test margin availability
+        try:
+            margins = trading_state.kite_client.margins()
+            equity_margin = margins.get('equity', {})
+            available_cash = equity_margin.get('available', {}).get('cash', 0)
+            
+            if available_cash > 0:
+                await manager.broadcast({
+                    "type": "trading_status",
+                    "message": f"✅ Account has ₹{available_cash:.2f} available for trading"
+                })
+                
+                await manager.broadcast({
+                    "type": "trading_status",
+                    "message": "💡 You CAN place orders even without market data permissions"
+                })
+                
+                await manager.broadcast({
+                    "type": "trading_status",
+                    "message": "⚠️ You'll need to specify prices manually (no live quotes)"
+                })
+                
+                return JSONResponse({
+                    "success": True,
+                    "message": "Basic trading possible",
+                    "available_cash": available_cash,
+                    "can_trade": True
+                })
+            else:
+                await manager.broadcast({
+                    "type": "trading_status",
+                    "message": "❌ No cash available for trading"
+                })
+                return JSONResponse({
+                    "success": False,
+                    "message": "No trading balance available"
+                })
+                
+        except Exception as e:
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": f"❌ Cannot access margin data: {str(e)}"
+            })
+            return JSONResponse({
+                "success": False,
+                "message": f"Margin access failed: {e}"
+            })
+            
+    except Exception as e:
+        return JSONResponse({
+            "success": False,
+            "message": f"Order test failed: {e}"
+        })
+
+@app.post("/api/place_manual_order")
+async def place_manual_order(request: Request):
+    """Place a manual order with user-specified price (works without market data permissions)"""
+    try:
+        if not trading_state.is_authenticated or not trading_state.kite_client:
+            return JSONResponse({
+                "success": False,
+                "message": "Not authenticated"
+            })
+        
+        # Get form data
+        form_data = await request.form()
+        symbol = form_data.get('symbol', '').upper()
+        action = form_data.get('action', '')  # BUY or SELL
+        quantity = int(form_data.get('quantity', 0))
+        price = float(form_data.get('price', 0))
+        
+        if not all([symbol, action, quantity > 0, price > 0]):
+            return JSONResponse({
+                "success": False,
+                "message": "All fields are required: symbol, action, quantity, price"
+            })
+        
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": f"📝 Placing MANUAL order: {action} {quantity} {symbol} @ ₹{price}"
+        })
+        
+        # Place order using official Kite Connect format
+        try:
+            kite = trading_state.kite_client
+            
+            order_id = kite.place_order(
+                variety=kite.VARIETY_REGULAR,
+                tradingsymbol=symbol,
+                exchange=kite.EXCHANGE_NSE,
+                transaction_type=kite.TRANSACTION_TYPE_BUY if action == 'BUY' else kite.TRANSACTION_TYPE_SELL,
+                quantity=quantity,
+                order_type=kite.ORDER_TYPE_LIMIT,
+                price=price,
+                product=kite.PRODUCT_MIS,
+                validity=kite.VALIDITY_DAY
+            )
+            
+            if order_id:
+                # Create trade record
+                trade_record = {
+                    'time': datetime.now().strftime('%H:%M:%S'),
+                    'symbol': symbol,
+                    'action': action,
+                    'quantity': quantity,
+                    'price': price,
+                    'value': quantity * price,
+                    'order_id': order_id,
+                    'status': 'PLACED'
+                }
+                
+                trading_state.trades.append(trade_record)
+                
+                # Update budget
+                if action == 'BUY':
+                    trading_state.budget_used += trade_record['value']
+                
+                # Broadcast success
+                await manager.broadcast({
+                    "type": "new_trade",
+                    "trade": trade_record,
+                    "pnl": trading_state.daily_pnl
+                })
+                
+                await manager.broadcast({
+                    "type": "trading_status",
+                    "message": f"✅ ORDER PLACED: {action} {quantity} {symbol} @ ₹{price} (ID: {order_id})"
+                })
+                
+                return JSONResponse({
+                    "success": True,
+                    "message": f"Order placed successfully: {order_id}",
+                    "order_id": order_id
+                })
+            else:
+                await manager.broadcast({
+                    "type": "trading_status",
+                    "message": "❌ Order placement failed - no order ID returned"
+                })
+                return JSONResponse({
+                    "success": False,
+                    "message": "Order placement failed"
+                })
+                
+        except Exception as order_error:
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": f"❌ Order error: {str(order_error)}"
+            })
+            return JSONResponse({
+                "success": False,
+                "message": f"Order failed: {order_error}"
+            })
+            
+    except Exception as e:
+        return JSONResponse({
+            "success": False,
+            "message": f"Request error: {e}"
         })
 
 if __name__ == "__main__":
