@@ -236,42 +236,48 @@ class TradingEngine:
                 
             except Exception as e:
                 logger.error(f"❌ Failed to screen stocks: {e}")
-                logger.info("🔄 Using fallback stock screening...")
+                logger.info("🔄 Attempting fallback stock analysis with real market data...")
                 
-                # Fallback: Use a simple stock list for basic functionality
+                # Fallback: Analyze major stocks with real market data
                 try:
-                    fallback_stocks = ['RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK']
-                    logger.info(f"📊 Fallback: Checking {len(fallback_stocks)} major stocks...")
+                    fallback_stocks = Config.FALLBACK_STOCKS[:3]  # Limit to 3 for safety
+                    logger.info(f"📊 Fallback: Analyzing {len(fallback_stocks)} major stocks with REAL market data...")
                     
-                    # Create basic signals for fallback (demo purposes)
                     signals = []
-                    for stock in fallback_stocks[:2]:  # Limit to 2 for safety
-                        # Use realistic prices for demo
-                        demo_prices = {
-                            'RELIANCE': 2450.0,
-                            'TCS': 3890.0, 
-                            'HDFCBANK': 1678.0,
-                            'INFY': 1825.0,
-                            'ICICIBANK': 975.0
-                        }
+                    for stock in fallback_stocks:
+                        try:
+                            # Get REAL current price from Zerodha
+                            current_price = self.market_analyzer.get_real_time_price(stock)
+                            if not current_price:
+                                logger.warning(f"⚠️ Could not get real price for {stock}, skipping...")
+                                continue
+                            
+                            logger.info(f"💰 Real-time price for {stock}: ₹{current_price}")
+                            
+                            # Generate signals using real market data
+                            signal_data = self.market_analyzer.generate_signals(stock)
+                            
+                            if signal_data['signal'] in ['BUY', 'SELL'] and signal_data['strength'] > 0.3:
+                                signal_data['symbol'] = stock
+                                signals.append(signal_data)
+                                logger.info(f"📈 Fallback signal: {stock} - {signal_data['signal']} "
+                                          f"(Strength: {signal_data['strength']:.2f}, Real Price: ₹{current_price})")
+                            else:
+                                logger.info(f"📊 {stock}: No strong signal (Strength: {signal_data['strength']:.2f})")
                         
-                        signals.append({
-                            'symbol': stock,
-                            'signal': 'BUY',  # Demo mode - always BUY for simplicity
-                            'strength': 0.6,
-                            'price': demo_prices.get(stock, 100.0),
-                            'confidence': 0.7
-                        })
+                        except Exception as stock_error:
+                            logger.error(f"❌ Failed to analyze {stock}: {stock_error}")
+                            continue
                     
                     if signals:
-                        logger.info(f"🔄 Generated {len(signals)} fallback signals for demo trading")
-                        logger.info("⚠️ DEMO MODE: Using fallback signals for testing purposes")
+                        logger.info(f"✅ Fallback analysis generated {len(signals)} REAL trading signals")
+                        logger.info("🚀 Using REAL market data and prices - NOT simulation!")
                     else:
-                        logger.info("📊 No fallback signals generated - will retry in next cycle")
+                        logger.info("📊 No strong signals found in fallback analysis - will retry in next cycle")
                         return
                         
                 except Exception as fallback_error:
-                    logger.error(f"❌ Fallback stock screening also failed: {fallback_error}")
+                    logger.error(f"❌ Fallback stock analysis also failed: {fallback_error}")
                     logger.info("⏳ Will retry complete analysis in next cycle...")
                     return
             

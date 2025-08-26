@@ -7,8 +7,6 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 import ta
-import yfinance as yf
-
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -17,6 +15,9 @@ class MarketAnalyzer:
     def __init__(self, zerodha_client):
         self.zerodha_client = zerodha_client
         self.instruments_cache = {}
+        
+        # Initialize instruments on creation
+        logger.info("🔧 Initializing MarketAnalyzer with real Zerodha data...")
         self._load_instruments()
     
     def _load_instruments(self):
@@ -27,11 +28,23 @@ class MarketAnalyzer:
             # Load instruments from all exchanges
             for exchange in Config.EXCHANGES:
                 try:
+                    logger.info(f"📊 Loading instruments from {exchange}...")
                     instruments = self.zerodha_client.get_instruments(exchange)
-                    logger.info(f"📊 Loaded {len(instruments)} instruments from {exchange}")
+                    logger.info(f"✅ Loaded {len(instruments)} instruments from {exchange}")
                     all_instruments.extend(instruments)
                 except Exception as e:
                     logger.error(f"Failed to load instruments from {exchange}: {e}")
+            
+            if not all_instruments:
+                logger.warning("⚠️ No instruments loaded from exchanges, using fallback stocks")
+                # Use fallback but still try to get their instrument tokens
+                for symbol in Config.FALLBACK_STOCKS:
+                    self.instruments_cache[symbol] = {
+                        'tradingsymbol': symbol, 
+                        'exchange': 'NSE',
+                        'instrument_token': symbol  # Will be resolved later
+                    }
+                return
             
             # Apply filtering criteria
             filtered_instruments = self._filter_instruments(all_instruments)
@@ -43,97 +56,163 @@ class MarketAnalyzer:
             
             logger.info(f"✅ Filtered and loaded {len(self.instruments_cache)} tradeable instruments")
             
+            # Log some examples
+            if self.instruments_cache:
+                examples = list(self.instruments_cache.keys())[:5]
+                logger.info(f"📈 Example instruments: {', '.join(examples)}")
+            
         except Exception as e:
             logger.error(f"Failed to load instruments: {e}")
             # Fallback to default stocks
-            logger.info("📋 Using fallback stock list")
+            logger.info("📋 Using fallback stock list due to error")
             for symbol in Config.FALLBACK_STOCKS:
-                self.instruments_cache[symbol] = {'tradingsymbol': symbol, 'exchange': 'NSE'}
+                self.instruments_cache[symbol] = {
+                    'tradingsymbol': symbol, 
+                    'exchange': 'NSE',
+                    'instrument_token': symbol
+                }
     
     def _filter_instruments(self, instruments: List[Dict]) -> List[Dict]:
         """Apply filtering criteria to instruments"""
         filtered = []
         
         for instrument in instruments:
-            try:
-                # Basic filtering
-                if not self._is_eligible_instrument(instrument):
-                    continue
-                
-                # Price filtering (if available)
-                if 'last_price' in instrument:
-                    price = float(instrument['last_price'])
-                    if price < Config.MIN_PRICE or price > Config.MAX_PRICE:
-                        continue
-                
+            if self._is_eligible_instrument(instrument):
                 filtered.append(instrument)
                 
-            except Exception as e:
-                continue
+                # Stop if we have enough instruments for performance
+                if len(filtered) >= Config.MAX_STOCKS_TO_ANALYZE:
+                    break
         
-        # Limit the number of instruments for performance
-        if len(filtered) > Config.MAX_STOCKS_TO_ANALYZE:
-            # Sort by some criteria (volume, market cap, etc.)
-            filtered = sorted(filtered, key=lambda x: x.get('volume', 0), reverse=True)
-            filtered = filtered[:Config.MAX_STOCKS_TO_ANALYZE]
-            logger.info(f"📊 Limited to top {Config.MAX_STOCKS_TO_ANALYZE} stocks by volume")
-        
+        logger.info(f"📊 Filtered {len(filtered)} eligible instruments from {len(instruments)} total")
         return filtered
     
     def _is_eligible_instrument(self, instrument: Dict) -> bool:
-        """Check if an instrument is eligible for trading"""
+        """Check if instrument meets our trading criteria"""
         try:
-            # Check instrument type
-            instrument_type = instrument.get('instrument_type', '')
-            if instrument_type != 'EQ':  # Only equity shares
+            # Basic checks
+            if 'tradingsymbol' not in instrument:
                 return False
             
-            # Check segment
-            segment = instrument.get('segment', '')
-            if segment not in ['NSE', 'BSE', 'NFO-OPT', 'NFO-FUT']:
+            symbol = instrument['tradingsymbol']
+            
+            # Skip derivatives, futures, options
+            if any(suffix in symbol for suffix in ['-EQ', 'FUT', 'CE', 'PE', 'BANK']):
                 return False
             
-            # Check if it's a valid equity symbol (no special characters that indicate derivatives)
-            symbol = instrument.get('tradingsymbol', '')
-            if not symbol or len(symbol) < 2:
+            # Check segment/instrument type
+            segment = instrument.get('segment', '').upper()
+            if segment not in ['NSE', 'BSE', 'NSE-EQ', 'BSE-EQ']:
                 return False
             
-            # Exclude derivatives and complex instruments
-            if any(x in symbol for x in ['-', 'FUT', 'CE', 'PE', 'CALL', 'PUT']):
+            # Check exchange
+            exchange = instrument.get('exchange', '').upper()
+            if exchange not in ['NSE', 'BSE']:
                 return False
             
-            # Check lot size (should be 1 for equity)
-            lot_size = instrument.get('lot_size', 1)
-            if lot_size != 1:
-                return False
+            # Additional filtering can be added here
             
             return True
             
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Error checking instrument {instrument}: {e}")
             return False
+    
+    def get_real_time_price(self, symbol: str) -> Optional[float]:
+        """Get real-time price from Zerodha API"""
+        try:
+            # Try to get instrument token
+            instrument_info = self.instruments_cache.get(symbol)
+            if not instrument_info:
+                logger.warning(f"Instrument not found in cache: {symbol}")
+                return None
+            
+            # Get quote using Zerodha API
+            exchange = instrument_info.get('exchange', 'NSE')
+            instrument_key = f"{exchange}:{symbol}"
+            
+            quotes = self.zerodha_client.get_quote([instrument_key])
+            
+            if quotes and instrument_key in quotes:
+                quote_data = quotes[instrument_key]
+                ltp = quote_data.get('last_price', 0)
+                logger.debug(f"📊 Real-time price for {symbol}: ₹{ltp}")
+                return float(ltp) if ltp else None
+            else:
+                logger.warning(f"No quote data for {symbol}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Failed to get real-time price for {symbol}: {e}")
+            return None
     
     def get_stock_data(self, symbol: str, period: str = "5d", interval: str = "5m") -> Optional[pd.DataFrame]:
         """
-        Get stock data from Yahoo Finance (fallback) or Zerodha
+        Get stock data from Zerodha historical data API
         """
         try:
-            # Try Yahoo Finance first for historical data
-            yf_symbol = f"{symbol}.NS"  # NSE suffix for Yahoo Finance
-            stock = yf.Ticker(yf_symbol)
-            data = stock.history(period=period, interval=interval)
-            
-            if data.empty:
-                logger.warning(f"No data found for {symbol}")
+            # Get instrument info
+            instrument_info = self.instruments_cache.get(symbol)
+            if not instrument_info:
+                logger.warning(f"Instrument not found: {symbol}")
                 return None
             
-            # Rename columns to standard format
-            data.columns = [col.lower() for col in data.columns]
-            data.reset_index(inplace=True)
+            # Get instrument token
+            instrument_token = instrument_info.get('instrument_token')
+            if not instrument_token:
+                logger.warning(f"No instrument token for {symbol}")
+                return None
             
-            return data
+            # Calculate date range
+            end_date = datetime.now()
+            
+            # Convert period to days
+            if period == "1d":
+                days = 1
+            elif period == "5d":
+                days = 5
+            elif period == "1mo":
+                days = 30
+            else:
+                days = 5  # Default
+            
+            start_date = end_date - timedelta(days=days)
+            
+            # Get historical data from Zerodha
+            logger.debug(f"📊 Fetching {days}d historical data for {symbol}...")
+            historical_data = self.zerodha_client.get_historical_data(
+                instrument_token=instrument_token,
+                from_date=start_date,
+                to_date=end_date,
+                interval=interval
+            )
+            
+            if not historical_data:
+                logger.warning(f"No historical data for {symbol}")
+                return None
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(historical_data)
+            
+            if df.empty:
+                logger.warning(f"Empty historical data for {symbol}")
+                return None
+            
+            # Standardize column names
+            df.columns = [col.lower() for col in df.columns]
+            
+            # Ensure we have the required columns
+            required_cols = ['open', 'high', 'low', 'close', 'volume']
+            for col in required_cols:
+                if col not in df.columns:
+                    logger.warning(f"Missing column {col} for {symbol}")
+                    return None
+            
+            logger.debug(f"✅ Got {len(df)} candles for {symbol}")
+            return df
             
         except Exception as e:
-            logger.error(f"Failed to get data for {symbol}: {e}")
+            logger.error(f"Failed to get historical data for {symbol}: {e}")
             return None
     
     def calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -181,120 +260,122 @@ class MarketAnalyzer:
     
     def generate_signals(self, symbol: str) -> Dict[str, any]:
         """
-        Generate buy/sell signals for a stock
-        Returns: {
-            'signal': 'BUY'/'SELL'/'HOLD',
-            'strength': 0-1,
-            'reasons': [],
-            'price': float,
-            'stop_loss': float,
-            'take_profit': float
-        }
+        Generate trading signals for a specific stock using real market data
         """
         try:
-            # Get stock data
-            df = self.get_stock_data(symbol)
-            if df is None or len(df) < 50:
-                return {'signal': 'HOLD', 'strength': 0, 'reasons': ['Insufficient data']}
+            logger.debug(f"🔍 Analyzing {symbol} for trading signals...")
+            
+            # Get real-time price first
+            current_price = self.get_real_time_price(symbol)
+            if not current_price:
+                logger.warning(f"❌ Could not get real-time price for {symbol}")
+                return {'signal': 'HOLD', 'strength': 0, 'reasons': ['No real-time price available']}
+            
+            logger.debug(f"💰 Current price for {symbol}: ₹{current_price}")
+            
+            # Get historical data for technical analysis
+            df = self.get_stock_data(symbol, period="5d", interval="5m")
+            if df is None or df.empty:
+                logger.warning(f"❌ No historical data for {symbol}")
+                return {'signal': 'HOLD', 'strength': 0, 'reasons': ['No historical data available']}
             
             # Calculate technical indicators
-            df = self.calculate_technical_indicators(df)
+            df_with_indicators = self.calculate_technical_indicators(df)
+            if df_with_indicators is None or df_with_indicators.empty:
+                logger.warning(f"❌ Failed to calculate indicators for {symbol}")
+                return {'signal': 'HOLD', 'strength': 0, 'reasons': ['Technical indicators calculation failed']}
             
             # Get latest values
-            latest = df.iloc[-1]
-            prev = df.iloc[-2] if len(df) > 1 else latest
+            latest = df_with_indicators.iloc[-1]
             
-            signal_score = 0
+            # Extract indicator values
+            rsi = latest.get('rsi', 50)
+            macd = latest.get('macd', 0)
+            macd_signal = latest.get('macd_signal', 0)
+            bb_upper = latest.get('bb_upper', current_price * 1.02)
+            bb_lower = latest.get('bb_lower', current_price * 0.98)
+            ema_fast = latest.get('ema_fast', current_price)
+            ema_slow = latest.get('ema_slow', current_price)
+            volume = latest.get('volume', 0)
+            
+            # Calculate signals
+            signals = []
             reasons = []
-            current_price = latest['close']
+            signal_strength = 0
             
-            # RSI Analysis
-            if latest['rsi'] < Config.RSI_OVERSOLD:
-                signal_score += 0.2
-                reasons.append(f"RSI oversold ({latest['rsi']:.2f})")
-            elif latest['rsi'] > Config.RSI_OVERBOUGHT:
-                signal_score -= 0.2
-                reasons.append(f"RSI overbought ({latest['rsi']:.2f})")
+            # RSI signals
+            if rsi < Config.RSI_OVERSOLD:
+                signals.append('BUY')
+                reasons.append(f'Oversold RSI ({rsi:.1f})')
+                signal_strength += 0.3
+            elif rsi > Config.RSI_OVERBOUGHT:
+                signals.append('SELL')
+                reasons.append(f'Overbought RSI ({rsi:.1f})')
+                signal_strength += 0.3
             
-            # EMA Crossover
-            if latest['ema_fast'] > latest['ema_slow'] and prev['ema_fast'] <= prev['ema_slow']:
-                signal_score += 0.3
-                reasons.append("EMA bullish crossover")
-            elif latest['ema_fast'] < latest['ema_slow'] and prev['ema_fast'] >= prev['ema_slow']:
-                signal_score -= 0.3
-                reasons.append("EMA bearish crossover")
+            # MACD signals
+            if macd > macd_signal and macd > 0:
+                signals.append('BUY')
+                reasons.append('Bullish MACD crossover')
+                signal_strength += 0.25
+            elif macd < macd_signal and macd < 0:
+                signals.append('SELL')
+                reasons.append('Bearish MACD crossover')
+                signal_strength += 0.25
             
-            # MACD Analysis
-            if latest['macd'] > latest['macd_signal'] and prev['macd'] <= prev['macd_signal']:
-                signal_score += 0.2
-                reasons.append("MACD bullish crossover")
-            elif latest['macd'] < latest['macd_signal'] and prev['macd'] >= prev['macd_signal']:
-                signal_score -= 0.2
-                reasons.append("MACD bearish crossover")
+            # Bollinger Bands signals
+            if current_price <= bb_lower:
+                signals.append('BUY')
+                reasons.append('Price at lower Bollinger Band')
+                signal_strength += 0.2
+            elif current_price >= bb_upper:
+                signals.append('SELL')
+                reasons.append('Price at upper Bollinger Band')
+                signal_strength += 0.2
             
-            # Bollinger Bands
-            if latest['close'] < latest['bb_lower']:
-                signal_score += 0.15
-                reasons.append("Price below lower Bollinger Band")
-            elif latest['close'] > latest['bb_upper']:
-                signal_score -= 0.15
-                reasons.append("Price above upper Bollinger Band")
+            # EMA trend signals
+            if ema_fast > ema_slow and current_price > ema_fast:
+                signals.append('BUY')
+                reasons.append('Bullish EMA trend')
+                signal_strength += 0.15
+            elif ema_fast < ema_slow and current_price < ema_fast:
+                signals.append('SELL')
+                reasons.append('Bearish EMA trend')
+                signal_strength += 0.15
             
-            # Volume Analysis
-            if latest['volume'] > latest['volume_sma'] * 1.5:
-                signal_score += 0.1 if signal_score > 0 else -0.1
-                reasons.append("High volume confirmation")
+            # Volume confirmation
+            avg_volume = df['volume'].tail(20).mean() if len(df) >= 20 else volume
+            if volume > avg_volume * 1.5:
+                signal_strength += 0.1
+                reasons.append('High volume confirmation')
             
-            # Price momentum
-            price_change = (latest['close'] - prev['close']) / prev['close']
-            if price_change > 0.01:  # 1% positive momentum
-                signal_score += 0.1
-                reasons.append("Positive price momentum")
-            elif price_change < -0.01:  # 1% negative momentum
-                signal_score -= 0.1
-                reasons.append("Negative price momentum")
+            # Determine final signal
+            buy_signals = signals.count('BUY')
+            sell_signals = signals.count('SELL')
             
-            # Support/Resistance levels
-            if latest['close'] > latest['resistance'] * 0.99:  # Near resistance
-                signal_score -= 0.1
-                reasons.append("Near resistance level")
-            elif latest['close'] < latest['support'] * 1.01:  # Near support
-                signal_score += 0.1
-                reasons.append("Near support level")
-            
-            # Determine signal
-            if signal_score >= 0.4:
-                signal = 'BUY'
-            elif signal_score <= -0.4:
-                signal = 'SELL'
+            if buy_signals > sell_signals and signal_strength > 0.4:
+                final_signal = 'BUY'
+            elif sell_signals > buy_signals and signal_strength > 0.4:
+                final_signal = 'SELL'
             else:
-                signal = 'HOLD'
+                final_signal = 'HOLD'
+                signal_strength = min(signal_strength, 0.3)  # Reduce strength for HOLD
             
-            # Calculate stop loss and take profit
-            atr = latest['atr']
-            if signal == 'BUY':
-                stop_loss = current_price - (atr * 2)
-                take_profit = current_price + (atr * 3)
-            elif signal == 'SELL':
-                stop_loss = current_price + (atr * 2)
-                take_profit = current_price - (atr * 3)
-            else:
-                stop_loss = current_price
-                take_profit = current_price
-            
-            return {
-                'signal': signal,
-                'strength': abs(signal_score),
-                'reasons': reasons,
-                'price': current_price,
-                'stop_loss': stop_loss,
-                'take_profit': take_profit,
-                'rsi': latest['rsi'],
-                'volume_ratio': latest['volume'] / latest['volume_sma'] if latest['volume_sma'] > 0 else 1
+            result = {
+                'signal': final_signal,
+                'strength': min(signal_strength, 1.0),  # Cap at 1.0
+                'price': current_price,  # REAL current price
+                'reasons': reasons[:3],  # Top 3 reasons
+                'rsi': rsi,
+                'macd': macd,
+                'volume_ratio': volume / avg_volume if avg_volume > 0 else 1.0
             }
             
+            logger.debug(f"📊 {symbol} Signal: {final_signal} (Strength: {signal_strength:.2f}, Price: ₹{current_price})")
+            return result
+            
         except Exception as e:
-            logger.error(f"Failed to generate signals for {symbol}: {e}")
+            logger.error(f"❌ Error generating signals for {symbol}: {e}")
             return {'signal': 'HOLD', 'strength': 0, 'reasons': ['Analysis failed']}
     
     def screen_stocks(self) -> List[Dict[str, any]]:
