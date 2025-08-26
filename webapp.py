@@ -79,6 +79,14 @@ try:
 except ImportError:
     KITE_AVAILABLE = False
 
+# Import real trading engine
+try:
+    from src.trading_engine import TradingEngine
+    TRADING_ENGINE_AVAILABLE = True
+except ImportError:
+    TRADING_ENGINE_AVAILABLE = False
+    TradingEngine = None
+
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -117,6 +125,9 @@ class TradingState:
         self.trading_thread = None
         self.auto_start_enabled = False
         self.scheduler_thread = None
+        # Real trading engine
+        self.trading_engine = None
+        self.use_real_trading = True  # Set to False for simulation mode
     
     def to_dict(self):
         return {
@@ -129,7 +140,9 @@ class TradingState:
             'positions_count': len(self.positions),
             'market_open': self.is_market_open(),
             'auto_start_enabled': self.auto_start_enabled,
-            'market_status': self.get_market_status()
+            'market_status': self.get_market_status(),
+            'use_real_trading': self.use_real_trading,
+            'trading_engine_available': TRADING_ENGINE_AVAILABLE
         }
     
     def is_market_open(self):
@@ -567,19 +580,38 @@ async def start_trading():
         
         trading_state.is_trading = True
         
-        # Start trading in background
-        trading_state.trading_thread = threading.Thread(
-            target=run_trading_simulation,
-            daemon=True
-        )
-        trading_state.trading_thread.start()
+        # Choose real trading or simulation
+        if trading_state.use_real_trading and TRADING_ENGINE_AVAILABLE:
+            # Initialize real trading engine
+            if not trading_state.trading_engine:
+                trading_state.trading_engine = TradingEngine()
+            
+            # Start real trading in background
+            trading_state.trading_thread = threading.Thread(
+                target=run_real_trading,
+                daemon=True
+            )
+            trading_state.trading_thread.start()
+            
+            message = "🚀 REAL automated trading started!"
+            logger.info("Real trading engine started")
+        else:
+            # Fallback to simulation
+            trading_state.trading_thread = threading.Thread(
+                target=run_trading_simulation,
+                daemon=True
+            )
+            trading_state.trading_thread.start()
+            
+            message = "⚠️ Simulation mode - No real trades will be placed"
+            logger.info("Trading simulation started")
         
         await manager.broadcast({
             "type": "trading_started",
-            "message": "Automated trading started during market hours"
+            "message": message
         })
         
-        return JSONResponse({"success": True, "message": "Trading started during market hours"})
+        return JSONResponse({"success": True, "message": message})
     
     except Exception as e:
         logger.error(f"Start trading error: {e}")
@@ -591,6 +623,10 @@ async def stop_trading():
     try:
         trading_state.is_trading = False
         
+        # Stop real trading engine if active
+        if trading_state.trading_engine:
+            trading_state.trading_engine.stop()
+        
         await manager.broadcast({
             "type": "trading_stopped",
             "message": "Automated trading stopped"
@@ -600,6 +636,43 @@ async def stop_trading():
     
     except Exception as e:
         logger.error(f"Stop trading error: {e}")
+        raise HTTPException(500, str(e))
+
+@app.post("/api/emergency_square_off")
+async def emergency_square_off():
+    """Emergency square off all positions"""
+    try:
+        if not trading_state.is_authenticated:
+            raise HTTPException(400, "Not authenticated")
+        
+        success = False
+        message = ""
+        
+        if trading_state.use_real_trading and trading_state.trading_engine:
+            # Real trading engine square off
+            success = trading_state.trading_engine.force_square_off_all()
+            message = "🚨 Emergency square off executed for all real positions" if success else "❌ Failed to square off positions"
+        else:
+            # Simulation mode - just clear positions
+            trading_state.positions = []
+            trading_state.daily_pnl = 0
+            trading_state.budget_used = 0
+            success = True
+            message = "🚨 All simulated positions cleared"
+        
+        await manager.broadcast({
+            "type": "emergency_square_off",
+            "message": message,
+            "success": success
+        })
+        
+        return JSONResponse({
+            "success": success,
+            "message": message
+        })
+    
+    except Exception as e:
+        logger.error(f"Emergency square off error: {e}")
         raise HTTPException(500, str(e))
 
 class AutoStartRequest(BaseModel):
@@ -646,6 +719,42 @@ async def toggle_auto_start(auto_start_data: AutoStartRequest):
         raise
     except Exception as e:
         logger.error(f"Auto-start toggle error: {e}")
+        raise HTTPException(500, str(e))
+
+class TradingModeRequest(BaseModel):
+    use_real_trading: bool
+
+@app.post("/api/toggle_trading_mode")
+async def toggle_trading_mode(mode_data: TradingModeRequest):
+    """Toggle between real trading and simulation mode"""
+    try:
+        if trading_state.is_trading:
+            raise HTTPException(400, "Cannot change mode while trading is active")
+        
+        trading_state.use_real_trading = mode_data.use_real_trading
+        
+        mode_text = "REAL TRADING" if mode_data.use_real_trading else "SIMULATION"
+        warning = " ⚠️ REAL MONEY WILL BE USED!" if mode_data.use_real_trading else " (Safe demo mode)"
+        
+        message = f"Trading mode set to: {mode_text}{warning}"
+        
+        # Broadcast update to connected clients
+        await manager.broadcast({
+            "type": "trading_mode_update",
+            "use_real_trading": trading_state.use_real_trading,
+            "message": message
+        })
+        
+        return JSONResponse({
+            "success": True, 
+            "message": message,
+            "use_real_trading": trading_state.use_real_trading
+        })
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Trading mode toggle error: {e}")
         raise HTTPException(500, str(e))
 
 # Market scheduler for auto-start
@@ -732,6 +841,93 @@ async def websocket_endpoint(websocket: WebSocket):
             await asyncio.sleep(2)
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+# Real trading function
+def run_real_trading():
+    """Run real automated trading using TradingEngine"""
+    try:
+        logger.info("🚀 Starting REAL trading engine...")
+        
+        # Initialize trading engine if not done
+        if not trading_state.trading_engine.initialize():
+            logger.error("Failed to initialize trading engine")
+            trading_state.is_trading = False
+            asyncio.run(manager.broadcast({
+                "type": "trading_stopped",
+                "message": "❌ Failed to initialize trading engine"
+            }))
+            return
+        
+        logger.info("✅ Real trading engine initialized successfully")
+        
+        # Broadcast successful initialization
+        asyncio.run(manager.broadcast({
+            "type": "trading_started",
+            "message": "🚀 Real trading engine is now active and analyzing markets"
+        }))
+        
+        # Start the real trading engine
+        # Note: TradingEngine.start() is blocking, so we need to modify it slightly
+        trading_state.trading_engine.daily_budget = trading_state.daily_budget
+        
+        # Run trading loop
+        while trading_state.is_trading:
+            try:
+                # Check if market is still open
+                if not trading_state.is_market_open():
+                    logger.info("Market closed during trading session - stopping")
+                    trading_state.is_trading = False
+                    asyncio.run(manager.broadcast({
+                        "type": "market_closed_stop",
+                        "message": "Trading stopped - Market closed"
+                    }))
+                    break
+                
+                # Get current status from trading engine
+                status = trading_state.trading_engine.get_status()
+                
+                # Update trading state with real data
+                if status:
+                    risk_summary = status.get('risk_summary', {})
+                    trading_state.daily_pnl = risk_summary.get('daily_pnl', 0)
+                    trading_state.budget_used = risk_summary.get('budget_used', 0)
+                    
+                    # Broadcast status update
+                    asyncio.run(manager.broadcast({
+                        "type": "status_update",
+                        "data": {
+                            "daily_pnl": trading_state.daily_pnl,
+                            "budget_used": trading_state.budget_used,
+                            "trades_count": len(trading_state.trades),
+                            "positions_count": status.get('monitoring_positions', 0)
+                        }
+                    }))
+                
+                # Run one iteration of analysis and trading
+                trading_state.trading_engine._analyze_and_trade()
+                
+                # Check positions
+                trading_state.trading_engine._monitor_positions()
+                
+                # Risk check
+                trading_state.trading_engine._risk_check()
+                
+                # Sleep between iterations
+                time.sleep(60)  # Check every minute
+                
+            except Exception as e:
+                logger.error(f"Error in real trading loop: {e}")
+                time.sleep(30)
+        
+        logger.info("🛑 Real trading engine stopped")
+        
+    except Exception as e:
+        logger.error(f"Real trading error: {e}")
+        trading_state.is_trading = False
+        asyncio.run(manager.broadcast({
+            "type": "trading_stopped",
+            "message": f"❌ Real trading error: {str(e)}"
+        }))
 
 # Background trading simulation
 def run_trading_simulation():
@@ -954,9 +1150,15 @@ def create_web_files():
                         {% else %}
                             <div class="d-grid gap-2">
                                 {% if not state.is_trading %}
-                                    <button class="btn btn-success btn-lg" onclick="startTrading()">
-                                        <i class="fas fa-play"></i> Start Trading
-                                    </button>
+                                    {% if state.use_real_trading %}
+                                        <button class="btn btn-danger btn-lg" onclick="startTrading()">
+                                            <i class="fas fa-play"></i> Start REAL Trading ⚠️
+                                        </button>
+                                    {% else %}
+                                        <button class="btn btn-success btn-lg" onclick="startTrading()">
+                                            <i class="fas fa-play"></i> Start Simulation
+                                        </button>
+                                    {% endif %}
                                 {% else %}
                                     <button class="btn btn-danger btn-lg" onclick="stopTrading()">
                                         <i class="fas fa-stop"></i> Stop Trading
@@ -987,6 +1189,27 @@ def create_web_files():
                                 </div>
                             </div>
                         </div>
+                        
+                        <!-- Trading Mode Control -->
+                        {% if state.trading_engine_available %}
+                        <div class="mb-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="tradingModeToggle" 
+                                       {% if state.use_real_trading %}checked{% endif %}
+                                       {% if state.is_trading %}disabled{% endif %}>
+                                <label class="form-check-label" for="tradingModeToggle">
+                                    <strong>Real Trading Mode</strong>
+                                </label>
+                            </div>
+                            <small class="text-muted">
+                                {% if state.use_real_trading %}
+                                    <i class="fas fa-exclamation-triangle text-warning"></i> <strong>REAL MONEY WILL BE USED!</strong>
+                                {% else %}
+                                    <i class="fas fa-info-circle text-info"></i> Simulation mode - safe for testing
+                                {% endif %}
+                            </small>
+                        </div>
+                        {% endif %}
                         
                         <!-- Auto-Start Control -->
                         {% if state.is_authenticated %}
@@ -1340,6 +1563,23 @@ function handleWebSocketMessage(data) {
                 updateTradingStatus(false);
             }
             break;
+        case 'trading_mode_update':
+            updateLiveStatus(data.message, 'info');
+            const tradingModeToggle = document.getElementById('tradingModeToggle');
+            if (tradingModeToggle) {
+                tradingModeToggle.checked = data.use_real_trading;
+            }
+            break;
+        case 'emergency_square_off':
+            updateLiveStatus(data.message, data.success ? 'success' : 'warning');
+            if (data.success) {
+                updateTradingStatus(false);
+                updatePnL(0); // Reset P&L on emergency square off
+                updateBudgetDisplay(trading_state.daily_budget, 0); // Reset budget used
+                trading_state.positions = []; // Clear positions
+                addTradeToTable({time: 'N/A', symbol: 'N/A', action: 'N/A', quantity: 0, price: 0, value: 0});
+            }
+            break;
     }
 }
 
@@ -1541,9 +1781,59 @@ function updateBudgetDisplay(dailyBudget, budgetUsed) {
 }
 
 async function squareOffAll() {
-    if (confirm('Are you sure you want to square off all positions?')) {
-        updateLiveStatus('Emergency square off initiated...', 'warning');
-        // Implementation would go here
+    const warningText = trading_state && trading_state.use_real_trading ? 
+        'Are you sure you want to square off ALL REAL POSITIONS? This cannot be undone!' :
+        'Are you sure you want to clear all simulated positions?';
+    
+    if (confirm(warningText)) {
+        try {
+            updateLiveStatus('Emergency square off initiated...', 'warning');
+            
+            const response = await fetch('/api/emergency_square_off', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                updateLiveStatus(result.message, 'success');
+            } else {
+                updateLiveStatus(result.message, 'danger');
+            }
+        } catch (error) {
+            updateLiveStatus('Error in emergency square off: ' + error.message, 'danger');
+        }
+    }
+}
+
+async function toggleTradingMode() {
+    const toggle = document.getElementById('tradingModeToggle');
+    const useRealTrading = toggle.checked;
+    
+    try {
+        const response = await fetch('/api/toggle_trading_mode', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                use_real_trading: useRealTrading
+            })
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            updateLiveStatus(result.message, 'info');
+            // No need to reload, the message will be broadcasted
+        } else {
+            alert('Failed to toggle trading mode: ' + result.message);
+            // Revert toggle state on failure
+            toggle.checked = !useRealTrading;
+        }
+    } catch (error) {
+        alert('Error toggling trading mode: ' + error.message);
+        // Revert toggle state on error
+        toggle.checked = !useRealTrading;
     }
 }
 
@@ -1564,6 +1854,12 @@ document.addEventListener('DOMContentLoaded', function() {
     const autoStartToggle = document.getElementById('autoStartToggle');
     if (autoStartToggle) {
         autoStartToggle.addEventListener('change', toggleAutoStart);
+    }
+
+    // Trading mode toggle
+    const tradingModeToggle = document.getElementById('tradingModeToggle');
+    if (tradingModeToggle) {
+        tradingModeToggle.addEventListener('change', toggleTradingMode);
     }
     
     // Check for URL parameters
