@@ -106,7 +106,7 @@ class ZerodhaClient:
         
         # Start server in background thread
         def run_server():
-            with socketserver.TCPServer(("", 5000), AuthHandler) as httpd:
+            with socketserver.TCPServer(("", 5001), AuthHandler) as httpd:
                 httpd.timeout = 300  # 5 minutes
                 httpd.handle_request()
         

@@ -15,9 +15,121 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
+class KiteClientAdapter:
+    """Adapter to make KiteConnect client compatible with MarketAnalyzer and RiskManager"""
+    def __init__(self, kite_client):
+        self.kite = kite_client
+        self.kite_client = kite_client  # For compatibility
+        self.is_authenticated = True
+        self.access_token = getattr(kite_client, 'access_token', None)
+    
+    def get_instruments(self, exchange="NSE"):
+        """Get instruments for an exchange"""
+        try:
+            return self.kite.instruments(exchange)
+        except Exception as e:
+            logger.error(f"Failed to get instruments for {exchange}: {e}")
+            return []
+    
+    def get_historical_data(self, instrument_token, from_date, to_date, interval="minute"):
+        """Get historical data"""
+        try:
+            return self.kite.historical_data(
+                instrument_token=instrument_token,
+                from_date=from_date,
+                to_date=to_date,
+                interval=interval
+            )
+        except Exception as e:
+            logger.error(f"Failed to get historical data: {e}")
+            return []
+    
+    def get_quote(self, instruments):
+        """Get quote for instruments"""
+        try:
+            return self.kite.quote(instruments)
+        except Exception as e:
+            logger.error(f"Failed to get quote: {e}")
+            return {}
+    
+    def get_ltp(self, instruments):
+        """Get LTP for instruments"""
+        try:
+            return self.kite.ltp(instruments)
+        except Exception as e:
+            logger.error(f"Failed to get LTP: {e}")
+            return {}
+    
+    def get_positions(self):
+        """Get positions"""
+        try:
+            return self.kite.positions()
+        except Exception as e:
+            logger.error(f"Failed to get positions: {e}")
+            return {'net': [], 'day': []}
+    
+    def get_holdings(self):
+        """Get holdings"""
+        try:
+            return self.kite.holdings()
+        except Exception as e:
+            logger.error(f"Failed to get holdings: {e}")
+            return []
+    
+    def get_orders(self):
+        """Get orders"""
+        try:
+            return self.kite.orders()
+        except Exception as e:
+            logger.error(f"Failed to get orders: {e}")
+            return []
+    
+    def get_available_margin(self):
+        """Get available margin"""
+        try:
+            margins = self.kite.margins()
+            equity_margin = margins.get('equity', {})
+            return equity_margin.get('available', {}).get('cash', 0)
+        except Exception as e:
+            logger.error(f"Failed to get margin: {e}")
+            return 0
+    
+    def place_order(self, **kwargs):
+        """Place an order"""
+        try:
+            return self.kite.place_order(**kwargs)
+        except Exception as e:
+            logger.error(f"Failed to place order: {e}")
+            return None
+    
+    def cancel_order(self, order_id):
+        """Cancel an order"""
+        try:
+            self.kite.cancel_order(order_id=order_id)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to cancel order: {e}")
+            return False
+    
+    def modify_order(self, order_id, **kwargs):
+        """Modify an order"""
+        try:
+            self.kite.modify_order(order_id=order_id, **kwargs)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to modify order: {e}")
+            return False 
+
 class TradingEngine:
-    def __init__(self):
-        self.zerodha_client = ZerodhaClient()
+    def __init__(self, kite_client=None):
+        # Use provided kite client if available, otherwise create new one
+        if kite_client:
+            self.zerodha_client = KiteClientAdapter(kite_client)
+            self.external_auth = True
+        else:
+            self.zerodha_client = ZerodhaClient()
+            self.external_auth = False
+            
         self.market_analyzer = None
         self.risk_manager = None
         self.is_running = False
@@ -35,111 +147,46 @@ class TradingEngine:
             # Validate configuration
             Config.validate_config()
             
-            # Authenticate with Zerodha
-            if not self.zerodha_client.authenticate():
-                logger.error("❌ Failed to authenticate with Zerodha")
-                return False
+            # Handle authentication
+            if self.external_auth:
+                logger.info("✅ Using externally authenticated Kite client")
+            else:
+                # Authenticate with Zerodha using internal client
+                if not self.zerodha_client.authenticate():
+                    logger.error("❌ Failed to authenticate with Zerodha")
+                    return False
             
             # Initialize components
             self.market_analyzer = MarketAnalyzer(self.zerodha_client)
             self.risk_manager = RiskManager(self.zerodha_client)
             
             # Get account info
-            profile = self.zerodha_client.get_profile()
-            logger.info(f"✅ Logged in as: {profile.get('user_name', 'Unknown')}")
+            try:
+                if self.external_auth:
+                    profile = self.zerodha_client.kite.profile()
+                else:
+                    profile = self.zerodha_client.get_profile()
+                logger.info(f"✅ Logged in as: {profile.get('user_name', 'Unknown')}")
+            except Exception as e:
+                logger.warning(f"Could not fetch profile: {e}")
+                profile = {}
             
             # Display risk summary
-            risk_summary = self.risk_manager.get_risk_summary()
-            logger.info(f"💰 Available Budget: ₹{risk_summary.get('remaining_budget', 0):.2f}")
-            logger.info(f"📊 Daily PnL: ₹{risk_summary.get('daily_pnl', 0):.2f}")
+            try:
+                risk_summary = self.risk_manager.get_risk_summary()
+                logger.info(f"💰 Available Budget: ₹{risk_summary.get('remaining_budget', 0):.2f}")
+                logger.info(f"📊 Daily PnL: ₹{risk_summary.get('daily_pnl', 0):.2f}")
+            except Exception as e:
+                logger.warning(f"Could not get risk summary: {e}")
             
             logger.info("✅ Trading Engine initialized successfully")
             return True
             
         except Exception as e:
             logger.error(f"❌ Failed to initialize Trading Engine: {e}")
+            import traceback
+            traceback.print_exc()
             return False
-    
-    def start(self, daily_budget: float = None):
-        """Start the trading engine"""
-        try:
-            if daily_budget:
-                Config.MAX_DAILY_BUDGET = daily_budget
-                logger.info(f"💵 Daily budget set to: ₹{daily_budget:.2f}")
-            
-            if not self.initialize():
-                return False
-            
-            self.is_running = True
-            self.stop_trading = False
-            
-            logger.info("🎯 Starting automated trading...")
-            
-            # Schedule trading tasks
-            self._schedule_tasks()
-            
-            # Start main trading loop
-            self._run_trading_loop()
-            
-        except KeyboardInterrupt:
-            logger.info("🛑 Trading stopped by user")
-            self.stop()
-        except Exception as e:
-            logger.error(f"❌ Trading engine error: {e}")
-            self.stop()
-    
-    def stop(self):
-        """Stop the trading engine"""
-        logger.info("🛑 Stopping trading engine...")
-        self.is_running = False
-        self.stop_trading = True
-        
-        # Emergency square off if needed
-        try:
-            positions = self.risk_manager.get_current_positions()
-            if positions:
-                logger.warning("⚠️ Open positions found. Initiating square off...")
-                self.risk_manager.emergency_square_off_all()
-        except Exception as e:
-            logger.error(f"Error during emergency square off: {e}")
-        
-        logger.info("✅ Trading engine stopped")
-    
-    def _schedule_tasks(self):
-        """Schedule various trading tasks"""
-        # Market analysis every 5 minutes
-        schedule.every(5).minutes.do(self._analyze_and_trade)
-        
-        # Position monitoring every 2 minutes
-        schedule.every(2).minutes.do(self._monitor_positions)
-        
-        # Risk check every 10 minutes
-        schedule.every(10).minutes.do(self._risk_check)
-        
-        # Auto square off at configured time
-        schedule.every().day.at(Config.SQUARE_OFF_TIME).do(self._auto_square_off)
-        
-        logger.info("📅 Trading tasks scheduled")
-    
-    def _run_trading_loop(self):
-        """Main trading loop"""
-        while self.is_running:
-            try:
-                # Check if market is open
-                if not self.zerodha_client.is_market_open():
-                    logger.info("🏪 Market is closed. Waiting...")
-                    time.sleep(300)  # Check every 5 minutes
-                    continue
-                
-                # Run scheduled tasks
-                schedule.run_pending()
-                
-                # Sleep for a short interval
-                time.sleep(30)  # 30 seconds between iterations
-                
-            except Exception as e:
-                logger.error(f"Error in trading loop: {e}")
-                time.sleep(60)  # Wait 1 minute before retrying
     
     def _analyze_and_trade(self):
         """Analyze market and execute trades"""
@@ -333,9 +380,6 @@ class TradingEngine:
                     symbol = position.get('tradingsymbol', '')
                     pnl = position.get('pnl', 0)
                     
-                    # Update PnL (only unrealized for now)
-                    # self.risk_manager.update_pnl(pnl)  # Commented to avoid double counting
-                    
                     # Check if position should be squared off
                     should_square_off, reason = self.risk_manager.should_square_off_position(position)
                     
@@ -413,30 +457,32 @@ class TradingEngine:
         except Exception as e:
             logger.error(f"Error in risk check: {e}")
     
-    def _auto_square_off(self):
-        """Auto square off all positions at market close"""
+    def stop(self):
+        """Stop the trading engine"""
+        logger.info("🛑 Stopping trading engine...")
+        self.is_running = False
+        self.stop_trading = True
+        
+        # Emergency square off if needed
         try:
-            logger.info("🔔 Auto square off time reached")
-            
             positions = self.risk_manager.get_current_positions()
             if positions:
-                logger.info(f"🔄 Squaring off {len(positions)} positions...")
+                logger.warning("⚠️ Open positions found. Initiating square off...")
                 self.risk_manager.emergency_square_off_all()
-            else:
-                logger.info("✅ No positions to square off")
-                
         except Exception as e:
-            logger.error(f"Error in auto square off: {e}")
+            logger.error(f"Error during emergency square off: {e}")
+        
+        logger.info("✅ Trading engine stopped")
     
     def get_status(self) -> Dict:
         """Get current trading engine status"""
         try:
-            risk_summary = self.risk_manager.get_risk_summary()
+            risk_summary = self.risk_manager.get_risk_summary() if self.risk_manager else {}
             
             return {
                 'is_running': self.is_running,
                 'stop_trading': self.stop_trading,
-                'market_open': self.zerodha_client.is_market_open(),
+                'market_open': self._is_market_open(),
                 'active_orders': len(self.active_orders),
                 'monitoring_positions': len(self.monitoring_positions),
                 'risk_summary': risk_summary
@@ -450,7 +496,18 @@ class TradingEngine:
         """Force square off all positions (manual intervention)"""
         try:
             logger.warning("🚨 Manual square off initiated")
-            return self.risk_manager.emergency_square_off_all()
+            return self.risk_manager.emergency_square_off_all() if self.risk_manager else False
         except Exception as e:
             logger.error(f"Manual square off failed: {e}")
-            return False 
+            return False
+    
+    def _is_market_open(self):
+        """Check if market is open"""
+        # Use webapp's market open logic for consistency
+        from datetime import datetime
+        now = datetime.now()
+        if now.weekday() >= 5:  # Weekend
+            return False
+        market_open_time = now.replace(hour=9, minute=15, second=0, microsecond=0)
+        market_close_time = now.replace(hour=15, minute=30, second=0, microsecond=0)
+        return market_open_time <= now <= market_close_time 

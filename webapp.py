@@ -848,7 +848,21 @@ def run_real_trading():
     try:
         logger.info("🚀 Starting REAL trading engine...")
         
-        # Initialize trading engine if not done
+        # Check if we have authentication
+        if not trading_state.is_authenticated or not trading_state.kite_client:
+            logger.error("❌ Not authenticated with Zerodha")
+            trading_state.is_trading = False
+            asyncio.run(manager.broadcast({
+                "type": "trading_stopped",
+                "message": "❌ Authentication required for real trading"
+            }))
+            return
+        
+        # Initialize trading engine with authenticated client
+        if not trading_state.trading_engine:
+            trading_state.trading_engine = TradingEngine(kite_client=trading_state.kite_client)
+        
+        # Initialize trading engine 
         if not trading_state.trading_engine.initialize():
             logger.error("Failed to initialize trading engine")
             trading_state.is_trading = False
@@ -866,8 +880,7 @@ def run_real_trading():
             "message": "🚀 Real trading engine is now active and analyzing markets"
         }))
         
-        # Start the real trading engine
-        # Note: TradingEngine.start() is blocking, so we need to modify it slightly
+        # Set budget from webapp
         trading_state.trading_engine.daily_budget = trading_state.daily_budget
         
         # Run trading loop
