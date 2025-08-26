@@ -1333,6 +1333,10 @@ def create_web_files():
                                 <button class="btn btn-warning" onclick="squareOffAll()">
                                     <i class="fas fa-times-circle"></i> Emergency Square Off
                                 </button>
+                                
+                                <button class="btn btn-info" onclick="testApiConnection()">
+                                    <i class="fas fa-vial"></i> Test API Connection
+                                </button>
                             </div>
                         {% endif %}
                         
@@ -2032,7 +2036,26 @@ async function toggleTradingMode() {
     }
 }
 
-
+async function testApiConnection() {
+    try {
+        updateLiveStatus('🔍 Testing Zerodha API connection...', 'info');
+        
+        const response = await fetch('/api/test_api_connection', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'}
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            updateLiveStatus('✅ API Test Passed: All Zerodha APIs working correctly', 'success');
+        } else {
+            updateLiveStatus('❌ API Test Failed: ' + result.message, 'danger');
+        }
+    } catch (error) {
+        updateLiveStatus('❌ API Test Error: ' + error.message, 'danger');
+    }
+}
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
@@ -2139,6 +2162,193 @@ async def startup_event():
     """Create web files on startup"""
     create_web_files()
     logger.info("AI Trading Agent Web Application started")
+
+@app.post("/api/test_api_connection")
+async def test_api_connection():
+    """Test Zerodha API connection and validate implementation against official documentation"""
+    try:
+        if not trading_state.is_authenticated or not trading_state.kite_client:
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": "❌ API Test Failed: Not authenticated with Zerodha"
+            })
+            return JSONResponse({
+                "success": False,
+                "message": "Not authenticated. Please authenticate first."
+            })
+        
+        await manager.broadcast({
+            "type": "trading_status", 
+            "message": "🔍 Testing Zerodha API connection according to official documentation..."
+        })
+        
+        # Test 1: Profile API (according to official docs)
+        try:
+            profile = trading_state.kite_client.profile()
+            if profile and 'user_name' in profile:
+                await manager.broadcast({
+                    "type": "trading_status",
+                    "message": f"✅ Profile API: User {profile['user_name']} authenticated successfully"
+                })
+                logger.info(f"✅ Profile API test passed: {profile['user_name']}")
+            else:
+                await manager.broadcast({
+                    "type": "trading_status",
+                    "message": "❌ Profile API: Invalid response format"
+                })
+                return JSONResponse({"success": False, "message": "Profile API failed"})
+        except Exception as e:
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": f"❌ Profile API Error: {str(e)[:100]}"
+            })
+            return JSONResponse({"success": False, "message": f"Profile API error: {e}"})
+        
+        # Test 2: Margins API (according to official docs)
+        try:
+            margins = trading_state.kite_client.margins()
+            if margins and 'equity' in margins:
+                equity_margin = margins['equity']
+                available_cash = equity_margin.get('available', {}).get('cash', 0)
+                await manager.broadcast({
+                    "type": "trading_status",
+                    "message": f"✅ Margins API: Available cash ₹{available_cash:.2f}"
+                })
+                logger.info(f"✅ Margins API test passed: ₹{available_cash:.2f} available")
+            else:
+                await manager.broadcast({
+                    "type": "trading_status",
+                    "message": "❌ Margins API: Invalid response format"
+                })
+                return JSONResponse({"success": False, "message": "Margins API failed"})
+        except Exception as e:
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": f"❌ Margins API Error: {str(e)[:100]}"
+            })
+            return JSONResponse({"success": False, "message": f"Margins API error: {e}"})
+        
+        # Test 3: Instruments API (according to official docs)
+        try:
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": "🔍 Testing Instruments API for NSE..."
+            })
+            instruments = trading_state.kite_client.instruments('NSE')
+            if instruments and len(instruments) > 0:
+                await manager.broadcast({
+                    "type": "trading_status",
+                    "message": f"✅ Instruments API: Loaded {len(instruments)} NSE instruments"
+                })
+                logger.info(f"✅ Instruments API test passed: {len(instruments)} instruments")
+            else:
+                await manager.broadcast({
+                    "type": "trading_status",
+                    "message": "❌ Instruments API: No instruments received"
+                })
+                return JSONResponse({"success": False, "message": "Instruments API failed"})
+        except Exception as e:
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": f"❌ Instruments API Error: {str(e)[:100]}"
+            })
+            return JSONResponse({"success": False, "message": f"Instruments API error: {e}"})
+        
+        # Test 4: Quote API (according to official docs)
+        try:
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": "🔍 Testing Quote API for RELIANCE..."
+            })
+            quote = trading_state.kite_client.quote(['NSE:RELIANCE'])
+            if quote and 'NSE:RELIANCE' in quote:
+                price = quote['NSE:RELIANCE'].get('last_price', 0)
+                await manager.broadcast({
+                    "type": "trading_status",
+                    "message": f"✅ Quote API: RELIANCE price ₹{price}"
+                })
+                logger.info(f"✅ Quote API test passed: RELIANCE ₹{price}")
+            else:
+                await manager.broadcast({
+                    "type": "trading_status",
+                    "message": "❌ Quote API: No quote data received"
+                })
+                return JSONResponse({"success": False, "message": "Quote API failed"})
+        except Exception as e:
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": f"❌ Quote API Error: {str(e)[:100]}"
+            })
+            return JSONResponse({"success": False, "message": f"Quote API error: {e}"})
+        
+        # Test 5: Orders API (according to official docs)
+        try:
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": "🔍 Testing Orders API..."
+            })
+            orders = trading_state.kite_client.orders()
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": f"✅ Orders API: Retrieved {len(orders)} orders"
+            })
+            logger.info(f"✅ Orders API test passed: {len(orders)} orders")
+        except Exception as e:
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": f"❌ Orders API Error: {str(e)[:100]}"
+            })
+            return JSONResponse({"success": False, "message": f"Orders API error: {e}"})
+        
+        # Test 6: Positions API (according to official docs)
+        try:
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": "🔍 Testing Positions API..."
+            })
+            positions = trading_state.kite_client.positions()
+            net_positions = positions.get('net', []) if positions else []
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": f"✅ Positions API: {len(net_positions)} positions"
+            })
+            logger.info(f"✅ Positions API test passed: {len(net_positions)} positions")
+        except Exception as e:
+            await manager.broadcast({
+                "type": "trading_status",
+                "message": f"❌ Positions API Error: {str(e)[:100]}"
+            })
+            return JSONResponse({"success": False, "message": f"Positions API error: {e}"})
+        
+        # All tests passed
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": "🚀 ALL API TESTS PASSED! Zerodha integration is working correctly"
+        })
+        
+        return JSONResponse({
+            "success": True,
+            "message": "All API tests passed successfully",
+            "details": {
+                "profile": "✅ Working",
+                "margins": "✅ Working", 
+                "instruments": "✅ Working",
+                "quotes": "✅ Working",
+                "orders": "✅ Working",
+                "positions": "✅ Working"
+            }
+        })
+        
+    except Exception as e:
+        await manager.broadcast({
+            "type": "trading_status",
+            "message": f"❌ API Test Critical Error: {str(e)[:100]}"
+        })
+        logger.error(f"API test critical error: {e}")
+        return JSONResponse({
+            "success": False,
+            "message": f"Critical error during API testing: {e}"
+        })
 
 if __name__ == "__main__":
     # Create web files

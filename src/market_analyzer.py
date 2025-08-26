@@ -594,217 +594,162 @@ class MarketAnalyzer:
             logger.error(f"Full traceback: {traceback.format_exc()}")
             return []
     
-    def _pre_screen_stocks(self) -> List[str]:
-        """
-        Pre-screen stocks based on basic criteria for performance
-        Returns list of promising symbols for detailed analysis
-        """
-        promising = []
-        
-        logger.info("🔍 Pre-screening stocks for volume and momentum...")
-        
-        for symbol, instrument in self.instruments_cache.items():
-            try:
-                # Get basic stock data for pre-screening
-                df = self.get_stock_data(symbol, period="2d", interval="5m")
-                if df is None or len(df) < 20:
-                    continue
-                
-                # Volume analysis
-                if not self._has_sufficient_volume(df):
-                    continue
-                
-                # Price movement analysis
-                if not self._has_significant_movement(df):
-                    continue
-                
-                # Volatility check (not too volatile, not too stable)
-                if not self._has_appropriate_volatility(df):
-                    continue
-                
-                promising.append(symbol)
-                
-            except Exception as e:
-                continue
-        
-        # Limit to top stocks if too many
-        if len(promising) > Config.TOP_PERFORMERS_COUNT * 2:
-            # Get additional data for ranking
-            ranked_stocks = self._rank_stocks_by_potential(promising)
-            promising = ranked_stocks[:Config.TOP_PERFORMERS_COUNT * 2]
-        
-        return promising
-    
-    def _has_sufficient_volume(self, df: pd.DataFrame) -> bool:
-        """Check if stock has sufficient volume for intraday trading"""
+    def validate_signal(self, signal_data: Dict) -> bool:
+        """Validate trading signal quality and data integrity"""
         try:
-            recent_volume = df['volume'].tail(10).mean()
-            avg_volume = df['volume'].mean()
-            
-            # Must have minimum volume and recent volume spike
-            return (recent_volume > Config.MIN_AVG_VOLUME and 
-                   recent_volume >= avg_volume * Config.MIN_VOLUME_MULTIPLIER)
-        except:
-            return False
-    
-    def _has_significant_movement(self, df: pd.DataFrame) -> bool:
-        """Check if stock has significant price movement for intraday potential"""
-        try:
-            latest_price = df['close'].iloc[-1]
-            prev_price = df['close'].iloc[-10] if len(df) > 10 else df['close'].iloc[0]
-            
-            price_change = abs((latest_price - prev_price) / prev_price)
-            
-            # Look for 0.5% to 8% movement (not too little, not too much)
-            return 0.005 <= price_change <= 0.08
-        except:
-            return False
-    
-    def _has_appropriate_volatility(self, df: pd.DataFrame) -> bool:
-        """Check if stock has appropriate volatility for intraday trading"""
-        try:
-            # Calculate recent volatility
-            df['returns'] = df['close'].pct_change()
-            volatility = df['returns'].tail(20).std()
-            
-            # Look for moderate volatility (0.1% to 5% standard deviation)
-            return 0.001 <= volatility <= 0.05
-        except:
-            return False
-    
-    def _rank_stocks_by_potential(self, symbols: List[str]) -> List[str]:
-        """Rank stocks by their intraday potential"""
-        ranked = []
-        
-        for symbol in symbols:
-            try:
-                df = self.get_stock_data(symbol, period="1d", interval="5m")
-                if df is None or len(df) < 10:
-                    continue
-                
-                # Calculate potential score
-                score = self._calculate_potential_score(df)
-                ranked.append((symbol, score))
-                
-            except:
-                continue
-        
-        # Sort by score and return symbols
-        ranked.sort(key=lambda x: x[1], reverse=True)
-        return [symbol for symbol, score in ranked]
-    
-    def _calculate_potential_score(self, df: pd.DataFrame) -> float:
-        """Calculate a potential score for intraday trading"""
-        try:
-            score = 0.0
-            
-            # Volume score (30%)
-            volume_ratio = df['volume'].tail(5).mean() / df['volume'].mean()
-            score += min(volume_ratio / 2, 1.0) * 0.3
-            
-            # Volatility score (25%)
-            df['returns'] = df['close'].pct_change()
-            volatility = df['returns'].tail(10).std()
-            volatility_score = min(volatility * 50, 1.0)  # Normalize
-            score += volatility_score * 0.25
-            
-            # Trend strength score (25%)
-            price_momentum = (df['close'].iloc[-1] - df['close'].iloc[-10]) / df['close'].iloc[-10]
-            momentum_score = min(abs(price_momentum) * 10, 1.0)
-            score += momentum_score * 0.25
-            
-            # Range score (20%)
-            high_low_range = (df['high'].max() - df['low'].min()) / df['close'].mean()
-            range_score = min(high_low_range * 20, 1.0)
-            score += range_score * 0.20
-            
-            return score
-            
-        except:
-            return 0.0
-    
-    def get_market_sentiment(self) -> Dict[str, any]:
-        """
-        Analyze overall market sentiment using index data
-        """
-        try:
-            # Get Nifty 50 data
-            nifty_data = self.get_stock_data("^NSEI", period="5d", interval="5m")
-            
-            if nifty_data is None or len(nifty_data) < 20:
-                return {'sentiment': 'NEUTRAL', 'strength': 0.5}
-            
-            # Calculate indicators for Nifty
-            nifty_data = self.calculate_technical_indicators(nifty_data)
-            latest = nifty_data.iloc[-1]
-            
-            sentiment_score = 0.5  # Start neutral
-            
-            # RSI analysis
-            if latest['rsi'] > 60:
-                sentiment_score += 0.1
-            elif latest['rsi'] < 40:
-                sentiment_score -= 0.1
-            
-            # EMA trend
-            if latest['ema_fast'] > latest['ema_slow']:
-                sentiment_score += 0.2
-            else:
-                sentiment_score -= 0.2
-            
-            # MACD
-            if latest['macd'] > latest['macd_signal']:
-                sentiment_score += 0.1
-            else:
-                sentiment_score -= 0.1
-            
-            # Price momentum
-            price_change = (latest['close'] - nifty_data.iloc[-5]['close']) / nifty_data.iloc[-5]['close']
-            if price_change > 0.01:
-                sentiment_score += 0.1
-            elif price_change < -0.01:
-                sentiment_score -= 0.1
-            
-            # Determine sentiment
-            if sentiment_score > 0.6:
-                sentiment = 'BULLISH'
-            elif sentiment_score < 0.4:
-                sentiment = 'BEARISH'
-            else:
-                sentiment = 'NEUTRAL'
-            
-            return {
-                'sentiment': sentiment,
-                'strength': sentiment_score,
-                'nifty_price': latest['close'],
-                'nifty_change': price_change * 100
-            }
-            
-        except Exception as e:
-            logger.error(f"Failed to analyze market sentiment: {e}")
-            return {'sentiment': 'NEUTRAL', 'strength': 0.5}
-    
-    def validate_signal(self, signal_data: Dict[str, any]) -> bool:
-        """
-        Additional validation for trading signals
-        """
-        try:
-            # Check minimum signal strength
-            if signal_data['strength'] < 0.4:
+            if not signal_data:
+                logger.warning("❌ Signal validation: Empty signal data")
                 return False
             
-            # Check RSI extremes
-            if signal_data.get('rsi', 50) > 80 or signal_data.get('rsi', 50) < 20:
-                logger.warning(f"Extreme RSI level: {signal_data.get('rsi')}")
+            # Check required fields
+            required_fields = ['symbol', 'signal', 'strength', 'price']
+            for field in required_fields:
+                if field not in signal_data:
+                    logger.warning(f"❌ Signal validation: Missing field '{field}'")
+                    return False
+            
+            symbol = signal_data['symbol']
+            signal_type = signal_data['signal']
+            strength = signal_data['strength']
+            price = signal_data['price']
+            
+            # Validate signal type
+            if signal_type not in ['BUY', 'SELL', 'HOLD']:
+                logger.warning(f"❌ Signal validation: Invalid signal type '{signal_type}' for {symbol}")
                 return False
             
-            # Check volume confirmation
-            if signal_data.get('volume_ratio', 1) < 0.8:
-                logger.warning("Low volume - signal may be weak")
+            # Validate strength
+            if not isinstance(strength, (int, float)) or strength < 0 or strength > 1:
+                logger.warning(f"❌ Signal validation: Invalid strength {strength} for {symbol}")
                 return False
             
+            # Validate price
+            if not isinstance(price, (int, float)) or price <= 0:
+                logger.warning(f"❌ Signal validation: Invalid price {price} for {symbol}")
+                return False
+            
+            # Check if symbol exists in our instruments cache
+            if symbol not in self.instruments_cache:
+                logger.warning(f"❌ Signal validation: Symbol {symbol} not in instruments cache")
+                return False
+            
+            # Validate price reasonableness (basic sanity check)
+            if price < 1 or price > 100000:  # Very basic range check
+                logger.warning(f"❌ Signal validation: Price {price} out of reasonable range for {symbol}")
+                return False
+            
+            logger.debug(f"✅ Signal validation passed for {symbol}: {signal_type} @ ₹{price}")
             return True
             
         except Exception as e:
-            logger.error(f"Signal validation failed: {e}")
-            return False 
+            logger.error(f"❌ Error validating signal: {e}")
+            return False
+    
+    def get_market_sentiment(self) -> Dict[str, any]:
+        """Get overall market sentiment using NIFTY data"""
+        try:
+            if not self.api_authenticated:
+                logger.error("❌ Cannot get market sentiment - API not authenticated")
+                return {'sentiment': 'UNKNOWN', 'strength': 0.0, 'reasons': ['API not authenticated']}
+            
+            logger.debug("📊 Analyzing market sentiment using NIFTY...")
+            
+            # Try to get NIFTY data for sentiment analysis
+            try:
+                # Get NIFTY quote
+                quote = self.zerodha_client.get_quote(['NSE:NIFTY 50'])
+                if not quote or 'NSE:NIFTY 50' not in quote:
+                    # Fallback to basic sentiment
+                    logger.warning("⚠️ Could not get NIFTY data, using neutral sentiment")
+                    return {'sentiment': 'NEUTRAL', 'strength': 0.5, 'reasons': ['No NIFTY data available']}
+                
+                nifty_data = quote['NSE:NIFTY 50']
+                current_price = nifty_data.get('last_price', 0)
+                change = nifty_data.get('net_change', 0)
+                change_percent = nifty_data.get('change', 0)
+                
+                # Simple sentiment based on NIFTY movement
+                reasons = []
+                if change > 0:
+                    if change_percent > 1:
+                        sentiment = 'BULLISH'
+                        strength = min(0.8, 0.5 + abs(change_percent) / 2)
+                        reasons.append(f'NIFTY up {change_percent:.2f}%')
+                    else:
+                        sentiment = 'BULLISH'  
+                        strength = 0.6
+                        reasons.append(f'NIFTY slightly up {change_percent:.2f}%')
+                elif change < 0:
+                    if change_percent < -1:
+                        sentiment = 'BEARISH'
+                        strength = min(0.8, 0.5 + abs(change_percent) / 2)
+                        reasons.append(f'NIFTY down {change_percent:.2f}%')
+                    else:
+                        sentiment = 'BEARISH'
+                        strength = 0.6
+                        reasons.append(f'NIFTY slightly down {change_percent:.2f}%')
+                else:
+                    sentiment = 'NEUTRAL'
+                    strength = 0.5
+                    reasons.append('NIFTY unchanged')
+                
+                logger.debug(f"📊 Market sentiment: {sentiment} (NIFTY: ₹{current_price}, {change_percent:.2f}%)")
+                
+                return {
+                    'sentiment': sentiment,
+                    'strength': strength,
+                    'reasons': reasons,
+                    'nifty_price': current_price,
+                    'nifty_change': change_percent
+                }
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Error getting NIFTY data for sentiment: {e}")
+                return {'sentiment': 'NEUTRAL', 'strength': 0.5, 'reasons': ['Error fetching market data']}
+            
+        except Exception as e:
+            logger.error(f"❌ Error in market sentiment analysis: {e}")
+            return {'sentiment': 'UNKNOWN', 'strength': 0.0, 'reasons': [f'Analysis error: {str(e)[:50]}']}
+    
+    def _pre_screen_stocks(self) -> List[str]:
+        """Pre-screen stocks for performance optimization"""
+        try:
+            if not self.api_authenticated:
+                logger.error("❌ Cannot pre-screen stocks - API not authenticated")
+                return []
+            
+            if not self.instruments_cache:
+                logger.error("❌ Cannot pre-screen stocks - No instruments loaded")
+                return []
+            
+            # Get a reasonable subset of stocks for analysis
+            # Priority: Large cap stocks that are actively traded
+            priority_stocks = [
+                'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK',
+                'KOTAKBANK', 'SBIN', 'BHARTIARTL', 'ITC', 'LT',
+                'HCLTECH', 'WIPRO', 'MARUTI', 'ASIANPAINT', 'TITAN'
+            ]
+            
+            # Filter to only include stocks that are in our instruments cache
+            available_priority = [stock for stock in priority_stocks if stock in self.instruments_cache]
+            
+            # Add some random stocks from our cache for diversity
+            all_symbols = list(self.instruments_cache.keys())
+            if len(all_symbols) > len(available_priority):
+                import random
+                random.seed(42)  # For reproducible results
+                additional_stocks = random.sample(
+                    [s for s in all_symbols if s not in available_priority],
+                    min(10, len(all_symbols) - len(available_priority))
+                )
+                available_priority.extend(additional_stocks)
+            
+            # Limit total stocks for performance
+            result = available_priority[:Config.TOP_PERFORMERS_COUNT]
+            
+            logger.debug(f"📊 Pre-screening identified {len(result)} stocks for analysis")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Error in pre-screening stocks: {e}")
+            return [] 

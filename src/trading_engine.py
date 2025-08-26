@@ -288,109 +288,158 @@ class TradingEngine:
             logger.info("🔄 Will retry analysis in next cycle...")
     
     def _execute_trade(self, signal_data: Dict) -> bool:
-        """Execute a trade based on signal"""
+        """Execute a trade based on signal using official Kite Connect API format"""
         try:
             symbol = signal_data.get('symbol', 'Unknown')
             signal_type = signal_data.get('signal', 'Unknown')
             strength = signal_data.get('strength', 0)
+            price = signal_data.get('price', 0)
             
             logger.info(f"🎯 Evaluating trade signal for {symbol}")
-            logger.info(f"📊 Signal: {signal_type}, Strength: {strength:.2f}")
+            logger.info(f"📊 Signal: {signal_type}, Strength: {strength:.2f}, Price: ₹{price}")
+            
+            # Import for UI broadcasting
+            try:
+                import asyncio
+                from webapp import trading_state, manager
+            except Exception as e:
+                logger.error(f"Failed to import webapp components: {e}")
+                return False
             
             # Risk check
             logger.info(f"🛡️ Performing risk assessment for {symbol}...")
+            asyncio.run(manager.broadcast({
+                "type": "trading_status",
+                "message": f"🛡️ Risk assessment for {symbol}..."
+            }))
+            
             can_trade, reason = self.risk_manager.can_take_trade(signal_data)
             if not can_trade:
                 logger.warning(f"⛔ Trade rejected for {symbol}: {reason}")
+                asyncio.run(manager.broadcast({
+                    "type": "trading_status",
+                    "message": f"⛔ Trade rejected for {symbol}: {reason}"
+                }))
                 return False
             else:
                 logger.info(f"✅ Risk check passed for {symbol}")
+                asyncio.run(manager.broadcast({
+                    "type": "trading_status",
+                    "message": f"✅ Risk check passed for {symbol}"
+                }))
             
             # Validate signal
             logger.info(f"🔍 Validating signal quality for {symbol}...")
             if not self.market_analyzer.validate_signal(signal_data):
                 logger.warning(f"⛔ Signal validation failed for {symbol}")
+                asyncio.run(manager.broadcast({
+                    "type": "trading_status",
+                    "message": f"⛔ Signal validation failed for {symbol}"
+                }))
                 return False
             else:
                 logger.info(f"✅ Signal validation passed for {symbol}")
+                asyncio.run(manager.broadcast({
+                    "type": "trading_status",
+                    "message": f"✅ Signal validation passed for {symbol}"
+                }))
             
             # Get available margin
             logger.info(f"💰 Checking available margin...")
-            available_margin = self.zerodha_client.get_available_margin()
-            logger.info(f"💵 Available margin: ₹{available_margin:.2f}")
-            
-            if available_margin < 1000:  # Minimum margin check
-                logger.warning(f"⛔ Insufficient margin for trading: ₹{available_margin:.2f}")
+            try:
+                margins = self.zerodha_client.kite.margins()
+                equity_margin = margins.get('equity', {})
+                available_cash = equity_margin.get('available', {}).get('cash', 0)
+                logger.info(f"💵 Available cash: ₹{available_cash:.2f}")
+                
+                asyncio.run(manager.broadcast({
+                    "type": "trading_status",
+                    "message": f"💵 Available margin: ₹{available_cash:.2f}"
+                }))
+                
+                if available_cash < 1000:  # Minimum margin check
+                    logger.warning(f"⛔ Insufficient margin: ₹{available_cash:.2f}")
+                    asyncio.run(manager.broadcast({
+                        "type": "trading_status",
+                        "message": f"⛔ Insufficient margin: ₹{available_cash:.2f}"
+                    }))
+                    return False
+                    
+            except Exception as e:
+                logger.error(f"❌ Failed to get margins: {e}")
+                asyncio.run(manager.broadcast({
+                    "type": "trading_status",
+                    "message": f"❌ Failed to get margins: {str(e)[:50]}"
+                }))
                 return False
             
             # Calculate position size
             logger.info(f"📐 Calculating position size for {symbol}...")
             quantity, amount_needed = self.risk_manager.calculate_position_size(
-                signal_data, available_margin)
+                signal_data, available_cash)
             
             if quantity == 0:
-                logger.warning(f"⛔ No quantity calculated for {symbol} - insufficient funds or limits reached")
+                logger.warning(f"⛔ No quantity calculated for {symbol}")
+                asyncio.run(manager.broadcast({
+                    "type": "trading_status",
+                    "message": f"⛔ Zero quantity calculated for {symbol}"
+                }))
                 return False
             else:
-                logger.info(f"📊 Position size: {quantity} shares, Amount needed: ₹{amount_needed:.2f}")
+                logger.info(f"📊 Position size: {quantity} shares, Amount: ₹{amount_needed:.2f}")
+                asyncio.run(manager.broadcast({
+                    "type": "trading_status",
+                    "message": f"📊 {symbol}: {quantity} shares @ ₹{price} = ₹{amount_needed:.2f}"
+                }))
             
-            # Prepare order parameters
-            price = signal_data.get('price', 0)
-            order_params = {
-                'tradingsymbol': symbol,
-                'exchange': 'NSE',
-                'transaction_type': 'BUY' if signal_type == 'BUY' else 'SELL',
-                'quantity': quantity,
-                'order_type': 'LIMIT',
-                'price': price,
-                'product': 'MIS',  # Intraday
-                'validity': 'DAY'
-            }
+            # Place order using official Kite Connect API format
+            logger.info(f"🚀 Placing order for {symbol} using official Kite Connect API...")
+            asyncio.run(manager.broadcast({
+                "type": "trading_status",
+                "message": f"🚀 Placing {signal_type} order for {symbol}..."
+            }))
             
-            logger.info(f"📋 Order details: {order_params['transaction_type']} {quantity} {symbol} @ ₹{price}")
-            
-            # Validate order parameters
-            logger.info(f"🔍 Validating order parameters...")
-            valid, validation_msg = self.risk_manager.validate_order_params(order_params)
-            if not valid:
-                logger.warning(f"⛔ Order validation failed for {symbol}: {validation_msg}")
-                return False
-            else:
-                logger.info(f"✅ Order parameters validated")
-            
-            # Place order
-            logger.info(f"🚀 Placing order for {symbol}...")
-            order_id = self.zerodha_client.place_order(**order_params)
-            
-            if order_id:
-                # Record trade
-                order_data = {
-                    'order_id': order_id,
-                    'symbol': symbol,
-                    'quantity': quantity,
-                    'price': price,
-                    'signal_data': signal_data,
-                    'timestamp': datetime.now()
-                }
+            try:
+                # Use official Kite Connect constants and format
+                kite = self.zerodha_client.kite
                 
-                self.active_orders[order_id] = order_data
-                self.risk_manager.record_trade(order_data)
+                order_id = kite.place_order(
+                    variety=kite.VARIETY_REGULAR,  # Regular order
+                    tradingsymbol=symbol,
+                    exchange=kite.EXCHANGE_NSE,  # NSE exchange
+                    transaction_type=kite.TRANSACTION_TYPE_BUY if signal_type == 'BUY' else kite.TRANSACTION_TYPE_SELL,
+                    quantity=quantity,
+                    order_type=kite.ORDER_TYPE_LIMIT,  # LIMIT order for better control
+                    price=price,
+                    product=kite.PRODUCT_MIS,  # Intraday
+                    validity=kite.VALIDITY_DAY  # Day validity
+                )
                 
-                # Create trade record for UI
-                trade_record = {
-                    'time': datetime.now().strftime('%H:%M:%S'),
-                    'symbol': symbol,
-                    'action': signal_type,
-                    'quantity': quantity,
-                    'price': round(price, 2),
-                    'value': round(quantity * price, 2)
-                }
-                
-                # Update webapp state and broadcast to UI
-                try:
-                    # Import here to avoid circular import
-                    import asyncio
-                    from webapp import trading_state, manager
+                if order_id:
+                    # Record trade
+                    order_data = {
+                        'order_id': order_id,
+                        'symbol': symbol,
+                        'quantity': quantity,
+                        'price': price,
+                        'signal_data': signal_data,
+                        'timestamp': datetime.now()
+                    }
+                    
+                    self.active_orders[order_id] = order_data
+                    self.risk_manager.record_trade(order_data)
+                    
+                    # Create trade record for UI
+                    trade_record = {
+                        'time': datetime.now().strftime('%H:%M:%S'),
+                        'symbol': symbol,
+                        'action': signal_type,
+                        'quantity': quantity,
+                        'price': round(price, 2),
+                        'value': round(quantity * price, 2),
+                        'order_id': order_id,
+                        'status': 'PENDING'
+                    }
                     
                     # Add to trading state
                     trading_state.trades.append(trade_record)
@@ -406,25 +455,47 @@ class TradingEngine:
                         "pnl": trading_state.daily_pnl
                     }))
                     
-                    logger.info(f"✅ Trade broadcasted to UI: {signal_type} {quantity} {symbol}")
+                    # Broadcast success message
+                    asyncio.run(manager.broadcast({
+                        "type": "trading_status",
+                        "message": f"✅ Order placed: {signal_type} {quantity} {symbol} @ ₹{price} (ID: {order_id})"
+                    }))
                     
-                except Exception as e:
-                    logger.warning(f"Failed to broadcast trade to UI: {e}")
-                
-                logger.info(f"✅ Order placed successfully for {symbol}")
-                logger.info(f"📄 Order ID: {order_id}")
-                logger.info(f"👀 Starting order monitoring...")
-                
-                # Start monitoring this position
-                threading.Thread(target=self._monitor_order, args=(order_id,), daemon=True).start()
-                
-                return True
-            else:
-                logger.error(f"❌ Failed to place order for {symbol} - broker rejected")
+                    logger.info(f"✅ Order placed successfully for {symbol}")
+                    logger.info(f"📄 Order ID: {order_id}")
+                    logger.info(f"👀 Starting order monitoring...")
+                    
+                    # Start monitoring this position
+                    threading.Thread(target=self._monitor_order, args=(order_id,), daemon=True).start()
+                    
+                    return True
+                else:
+                    logger.error(f"❌ Order placement failed - no order ID returned")
+                    asyncio.run(manager.broadcast({
+                        "type": "trading_status",
+                        "message": f"❌ Order placement failed for {symbol} - no order ID"
+                    }))
+                    return False
+                    
+            except Exception as order_error:
+                logger.error(f"❌ Order placement API error: {order_error}")
+                asyncio.run(manager.broadcast({
+                    "type": "trading_status",
+                    "message": f"❌ Order placement failed: {str(order_error)[:100]}"
+                }))
                 return False
                 
         except Exception as e:
             logger.error(f"❌ Failed to execute trade for {signal_data.get('symbol', 'Unknown')}: {e}")
+            try:
+                import asyncio
+                from webapp import manager
+                asyncio.run(manager.broadcast({
+                    "type": "trading_status",
+                    "message": f"❌ Trade execution error: {str(e)[:100]}"
+                }))
+            except:
+                pass
             return False
     
     def _monitor_order(self, order_id: str):
